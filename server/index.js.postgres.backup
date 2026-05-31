@@ -1,0 +1,223 @@
+﻿const express = require('express');
+const { Pool } = require('pg');
+const cors = require('cors');
+const dotenv = require('dotenv');
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// PostgreSQL connection
+const pool = new Pool({
+    user: process.env.DB_USER || 'admin',
+    host: process.env.DB_HOST || 'localhost',
+    database: process.env.DB_NAME || 'securebank',
+    password: process.env.DB_PASSWORD || 'admin123',
+    port: process.env.DB_PORT || 5432,
+});
+
+// Test database connection
+pool.connect((err, client, release) => {
+    if (err) {
+        console.error('âŒ Database connection error:', err.message);
+        console.log('âš ï¸  Continuing without database...');
+    } else {
+        console.log('âœ… Connected to PostgreSQL database');
+        release();
+    }
+});
+
+// ============================================
+// HEALTH CHECK
+// ============================================
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'SecureBank Honeypot Running', 
+        timestamp: new Date().toISOString(),
+        vulnerabilities: ['SQL Injection', 'XSS', 'Directory Traversal', 'Weak Session']
+    });
+});
+
+// ============================================
+// ATTACK SURFACE 1: SQL INJECTION (Login)
+// ============================================
+app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body;
+    
+    // VULNERABLE: SQL Injection
+    const query = `SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`;
+    
+    console.log(`[SQL Query] ${query}`);
+    
+    try {
+        const result = await pool.query(query);
+        
+        if (result.rows.length > 0) {
+            const user = result.rows[0];
+            res.json({
+                success: true,
+                message: 'Login successful',
+                user: {
+                    id: user.id,
+                    username: user.username,
+                    full_name: user.full_name,
+                    account_balance: user.account_balance
+                }
+            });
+        } else {
+            res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
+    } catch (err) {
+        // VULNERABLE: Leaking database errors
+        res.status(500).json({
+            success: false,
+            error: true,
+            message: 'Database error',
+            details: err.message,
+            query: query
+        });
+    }
+});
+
+// ============================================
+// ATTACK SURFACE 2: REFLECTED XSS (Search)
+// ============================================
+app.get('/api/search', (req, res) => {
+    const { q } = req.query;
+    
+    // VULNERABLE: Reflected XSS
+    res.json({
+        query: q,
+        message: `Search results for: ${q}`,
+        html: `<div class="search-result">You searched for: ${q}</div>`
+    });
+});
+
+// ============================================
+// ATTACK SURFACE 3: STORED XSS (Comments)
+// ============================================
+let comments = []; // In-memory storage for now
+
+app.get('/api/comments', (req, res) => {
+    res.json(comments);
+});
+
+app.post('/api/comments', (req, res) => {
+    const { author, content } = req.body;
+    
+    // VULNERABLE: Stored XSS - No sanitization
+    const newComment = {
+        id: comments.length + 1,
+        author: author || 'Anonymous',
+        content: content,
+        created_at: new Date().toISOString(),
+        ip: req.ip
+    };
+    
+    comments.unshift(newComment);
+    
+    // Keep only last 50 comments
+    if (comments.length > 50) comments = comments.slice(0, 50);
+    
+    res.json(newComment);
+});
+
+// ============================================
+// ATTACK SURFACE 4: DIRECTORY TRAVERSAL
+// ============================================
+app.get('/api/download', (req, res) => {
+    const { file } = req.query;
+    const path = require('path');
+    
+    // VULNERABLE: Directory Traversal
+    let filePath = file || '';
+    
+    res.json({
+        requested_file: file,
+        message: `Attempting to download: ${filePath}`,
+        traversal_detected: filePath.includes('../') || filePath.includes('..\\'),
+        system_path: path.resolve(filePath),
+        note: 'This endpoint is vulnerable to directory traversal attacks!'
+    });
+});
+
+// ============================================
+// ATTACK SURFACE 5: WEAK SESSION TOKENS
+// ============================================
+app.get('/api/session', (req, res) => {
+    const { user_id } = req.query;
+    
+    // VULNERABLE: Weak token generation
+    const timestamp = Date.now();
+    const weakToken = Buffer.from(`${user_id || 1}:${timestamp}`).toString('base64');
+    
+    res.json({
+        session_token: weakToken,
+        token_format: 'base64(user_id:timestamp)',
+        user_id: user_id || 1,
+        timestamp: timestamp,
+        token_strength: 'WEAK - Easily predictable',
+        decode_example: `Decoded: ${user_id || 1}:${timestamp}`
+    });
+});
+
+// ============================================
+// SOC DASHBOARD ENDPOINTS
+// ============================================
+app.get('/api/soc/events', (req, res) => {
+    res.json({
+        events: [],
+        message: 'Attack logs would appear here when database is connected'
+    });
+});
+
+app.get('/api/soc/stats', (req, res) => {
+    res.json({
+        total_attacks: 0,
+        attacks_by_type: [],
+        message: 'Statistics would appear here when database is connected'
+    });
+});
+
+// ============================================
+// TEST ENDPOINT
+// ============================================
+app.get('/api/test', (req, res) => {
+    res.json({ message: 'API is working! Test the vulnerable endpoints:', endpoints: [
+        'POST /api/login - SQL Injection',
+        'GET /api/search?q=test - Reflected XSS',
+        'GET /api/comments - View comments',
+        'POST /api/comments - Stored XSS',
+        'GET /api/download?file=test.pdf - Directory Traversal',
+        'GET /api/session?user_id=1 - Weak Session Tokens'
+    ]});
+});
+
+// Start server
+app.listen(PORT, () => {
+    console.log(`
+    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    ðŸ”´ SECUREBANK HONEYPOT - BACKEND RUNNING
+    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    ðŸ“ Server: http://localhost:${PORT}
+    
+    âœ… Test the server:
+       GET  http://localhost:${PORT}/health
+       GET  http://localhost:${PORT}/api/test
+    
+    ðŸŽ¯ VULNERABLE ENDPOINTS:
+       POST http://localhost:${PORT}/api/login
+       GET  http://localhost:${PORT}/api/search?q=<script>
+       POST http://localhost:${PORT}/api/comments
+       GET  http://localhost:${PORT}/api/download?file=../../../etc/passwd
+       GET  http://localhost:${PORT}/api/session?user_id=2
+    
+    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    `);
+});
