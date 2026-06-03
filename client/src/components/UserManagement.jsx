@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 
 function UserManagement() {
@@ -15,7 +15,7 @@ function UserManagement() {
   const loadUsers = async () => {
     try {
       const response = await axios.get('/api/users', {
-        headers: { 'x-user-id': currentUser?.id }
+        headers: { 'x-user-id': currentUser?.user_id || currentUser?.id }
       });
       setUsers(response.data);
     } catch (error) {
@@ -31,7 +31,7 @@ function UserManagement() {
       try {
         await axios.put(`/api/users/${userId}/balance`, 
           { amount: parseFloat(amount), description: desc },
-          { headers: { 'x-user-id': currentUser?.id } }
+          { headers: { 'x-user-id': currentUser?.user_id || currentUser?.id } }
         );
         loadUsers();
         alert('Balance updated successfully!');
@@ -45,7 +45,7 @@ function UserManagement() {
     if (window.confirm('Are you sure you want to delete this user?')) {
       try {
         await axios.delete(`/api/users/${userId}`, {
-          headers: { 'x-user-id': currentUser?.id }
+          headers: { 'x-user-id': currentUser?.user_id || currentUser?.id }
         });
         loadUsers();
         alert('User deleted successfully!');
@@ -59,7 +59,7 @@ function UserManagement() {
     e.preventDefault();
     try {
       await axios.post('/api/users', newUser, {
-        headers: { 'x-user-id': currentUser?.id }
+        headers: { 'x-user-id': currentUser?.user_id || currentUser?.id }
       });
       setShowModal(false);
       setNewUser({ username: '', password: '', full_name: '', role: 'customer' });

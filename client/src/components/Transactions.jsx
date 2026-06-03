@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 
 const API_URL = '';
@@ -17,7 +17,7 @@ function Transactions() {
   const loadTransactions = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/user/transactions`, {
-        headers: { 'x-user-id': user.id }
+        headers: { 'x-user-id': user.user_id || user.id }
       });
       setTransactions(response.data);
     } catch (error) {

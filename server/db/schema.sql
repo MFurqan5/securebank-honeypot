@@ -5,6 +5,7 @@ DROP TABLE IF EXISTS comments CASCADE;
 DROP TABLE IF EXISTS loans CASCADE;
 DROP TABLE IF EXISTS transactions CASCADE;
 DROP TABLE IF EXISTS ioc_records CASCADE;
+DROP TABLE IF EXISTS session_replays CASCADE;
 DROP TABLE IF EXISTS attack_logs CASCADE;
 DROP TABLE IF EXISTS attacker_profiles CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
@@ -77,54 +78,49 @@ CREATE TABLE employees (
     last_login TIMESTAMP
 );
 
--- Create attack_logs table
+-- Create attack_logs table according to request schema
 CREATE TABLE attack_logs (
     id SERIAL PRIMARY KEY,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
     source_ip VARCHAR(45),
     source_port INTEGER,
     method VARCHAR(10),
     path TEXT,
     payload TEXT,
-    attack_type VARCHAR(50),
-    sub_attack_type VARCHAR(100),
-    severity INTEGER CHECK (severity BETWEEN 1 AND 10),
+    attack_type VARCHAR(50),   -- 'sqli', 'xss', 'bruteforce', 'traversal'
+    severity VARCHAR(20),   -- 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'
     user_agent TEXT,
     tool_detected VARCHAR(100),
     os_fingerprint VARCHAR(100),
-    session_id VARCHAR(255),
-    targeted_endpoint VARCHAR(200),
-    attempted_username VARCHAR(100),
-    attempted_account VARCHAR(20),
-    response_code INTEGER,
-    is_blocked BOOLEAN DEFAULT FALSE
+    session_id VARCHAR(100),
+    response_code INTEGER
 );
 
--- Create attacker_profiles table
+-- Attacker profiles enriched by honeypot GeoIP service
 CREATE TABLE attacker_profiles (
-    ip VARCHAR(45) PRIMARY KEY,
-    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    total_requests INTEGER DEFAULT 0,
-    threat_score INTEGER DEFAULT 0 CHECK (threat_score BETWEEN 0 AND 100),
-    country VARCHAR(100),
-    city VARCHAR(100),
-    isp VARCHAR(200),
-    os VARCHAR(100),
-    tool VARCHAR(100),
-    is_known_malicious BOOLEAN DEFAULT FALSE,
-    sqli_count INTEGER DEFAULT 0,
-    xss_count INTEGER DEFAULT 0,
-    bruteforce_count INTEGER DEFAULT 0,
-    traversal_count INTEGER DEFAULT 0,
-    csrf_count INTEGER DEFAULT 0,
-    idor_count INTEGER DEFAULT 0,
-    attempted_account_takeover BOOLEAN DEFAULT FALSE,
-    attempted_funds_transfer BOOLEAN DEFAULT FALSE,
-    attempted_privilege_escalation BOOLEAN DEFAULT FALSE,
-    latitude DECIMAL(10, 8),
-    longitude DECIMAL(11, 8),
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  ip                VARCHAR(45) PRIMARY KEY,
+  first_seen        TIMESTAMPTZ,
+  last_seen         TIMESTAMPTZ,
+  total_requests    INTEGER DEFAULT 0,
+  threat_score      INTEGER DEFAULT 0,   -- 0 to 100
+  country           VARCHAR(100),
+  city              VARCHAR(100),
+  isp               VARCHAR(200),
+  os                VARCHAR(100),
+  tool              VARCHAR(100),
+  is_known_malicious BOOLEAN DEFAULT FALSE,
+  sqli_count        INTEGER DEFAULT 0,
+  xss_count         INTEGER DEFAULT 0,
+  bruteforce_count  INTEGER DEFAULT 0,
+  traversal_count   INTEGER DEFAULT 0
+);
+
+-- Create session_replays table for tracking keystrokes and inputs
+CREATE TABLE session_replays (
+    session_id      VARCHAR(100) PRIMARY KEY,
+    ip              VARCHAR(45),
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    actions         TEXT  -- JSON array string containing session movements
 );
 
 -- Create comments table (unsanitized for stored XSS)

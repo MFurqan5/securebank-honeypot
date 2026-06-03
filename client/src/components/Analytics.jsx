@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 
 function Analytics() {
@@ -14,7 +14,7 @@ function Analytics() {
     try {
       const response = await axios.get('/api/analytics', {
         headers: { 
-          'x-user-id': user?.id,
+          'x-user-id': user?.user_id || user?.id,
           'x-user-role': user?.role
         }
       });

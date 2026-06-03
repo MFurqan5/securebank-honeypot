@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
@@ -11,13 +11,7 @@ function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
 
-  // Check if already logged in
-  React.useEffect(() => {
-    const user = localStorage.getItem('user');
-    if (user) {
-      navigate('/dashboard');
-    }
-  }, [navigate]);
+
 
   const handleSubmit = async (e) => {
     e.preventDefault();

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 function Dashboard() {
@@ -20,11 +20,10 @@ function Dashboard() {
         <div className="balance-amount">${user.account_balance || '15,420.50'}</div>
       </div>
       <div className="quick-actions-grid">
-        <div className="action-card" onClick={() => navigate('/search')}>🔍 Search</div>
-        <div className="action-card" onClick={() => navigate('/comments')}>💬 Comments</div>
-        <div className="action-card" onClick={() => navigate('/download')}>📄 Download</div>
-        <div className="action-card" onClick={() => navigate('/session')}>🔐 Session</div>
-        <div className="action-card" onClick={() => navigate('/soc')}>📊 SOC</div>
+        <div className="action-card" onClick={() => navigate('/search')}>🔍 ATM & Branch Search</div>
+        <div className="action-card" onClick={() => navigate('/comments')}>💬 Customer Feedback</div>
+        <div className="action-card" onClick={() => navigate('/download')}>📄 e-Statements Manager</div>
+        <div className="action-card" onClick={() => navigate('/session')}>🔐 API & Security Keys</div>
       </div>
     </div>
   );

