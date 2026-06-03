@@ -4,8 +4,9 @@
   "description": "SecureBank Honeypot with SQL Injection, XSS, and other vulnerabilities",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "init-db": "node init-db.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

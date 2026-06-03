@@ -1,0 +1,65 @@
+@echo off
+echo ========================================
+echo SecureBank Honeypot - Setup Script
+echo ========================================
+echo.
+
+echo Step 1: Installing server dependencies...
+cd server
+call npm install
+if errorlevel 1 (
+    echo Error installing server dependencies
+    exit /b 1
+)
+echo ✓ Server dependencies installed
+
+echo.
+echo Step 2: Creating .env file...
+if not exist .env (
+    echo DATABASE_URL=postgresql://neondb_owner:YOUR_PASSWORD@ep-your-endpoint.us-east-1.neon.tech/neondb?sslmode=require > .env
+    echo HONEYPOT_PORT=5000 >> .env
+    echo NODE_ENV=development >> .env
+    echo CLIENT_URL=http://localhost:5173 >> .env
+    echo ✓ .env file created
+    echo.
+    echo Please update the DATABASE_URL in server\.env with your Neon.tech credentials!
+) else (
+    echo ✓ .env file already exists
+)
+
+echo.
+echo Step 3: Installing client dependencies...
+cd ..\client
+call npm install
+if errorlevel 1 (
+    echo Error installing client dependencies
+    exit /b 1
+)
+echo ✓ Client dependencies installed
+
+echo.
+echo ========================================
+echo ✅ Setup Complete!
+echo ========================================
+echo.
+echo Next steps:
+echo.
+echo 1. Edit server\.env with your Neon.tech connection string:
+echo    DATABASE_URL=postgresql://neondb_owner:PASSWORD@endpoint/neondb?sslmode=require
+echo.
+echo 2. Initialize the database:
+echo    cd server
+echo    npm run init-db
+echo.
+echo 3. In terminal 1, start the server:
+echo    cd server
+echo    npm run dev
+echo.
+echo 4. In terminal 2, start the client:
+echo    cd client
+echo    npm run dev
+echo.
+echo 5. Open http://localhost:5173 and login with:
+echo    Username: admin   Password: admin
+echo.
+pause

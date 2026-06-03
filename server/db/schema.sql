@@ -1,5 +1,3 @@
-# Create the schema.sql file
-cat > database/schema.sql << 'EOF'
 -- Drop existing tables if they exist (in correct order to avoid foreign key errors)
 DROP TABLE IF EXISTS transaction_alerts CASCADE;
 DROP TABLE IF EXISTS support_tickets CASCADE;
