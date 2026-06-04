@@ -1,12 +1,12 @@
-import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import React, { useEffect, useState } from "react";
+import axios from "axios";
 
-const API_URL = '';
+const API_URL = "http://localhost:5000";
 
 function Transactions() {
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const user = JSON.parse(localStorage.getItem('user') || 'null');
+  const user = JSON.parse(localStorage.getItem("user") || "null");
 
   useEffect(() => {
     if (user) {
@@ -17,11 +17,11 @@ function Transactions() {
   const loadTransactions = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/user/transactions`, {
-        headers: { 'x-user-id': user.user_id || user.id }
+        headers: { "x-user-id": user.user_id || user.id },
       });
       setTransactions(response.data);
     } catch (error) {
-      console.error('Error loading transactions:', error);
+      console.error("Error loading transactions:", error);
     } finally {
       setLoading(false);
     }
@@ -35,28 +35,36 @@ function Transactions() {
         <h2>💰 Transaction History</h2>
         <p>View all your account transactions</p>
       </div>
-      
+
       <div className="summary-cards">
         <div className="summary-card">
           <h4>Total Credits</h4>
           <div className="amount positive">
-            ${transactions.filter(t => t.type === 'credit').reduce((sum, t) => sum + t.amount, 0).toLocaleString()}
+            $
+            {transactions
+              .filter((t) => t.type === "credit")
+              .reduce((sum, t) => sum + t.amount, 0)
+              .toLocaleString()}
           </div>
         </div>
         <div className="summary-card">
           <h4>Total Debits</h4>
           <div className="amount negative">
-            ${transactions.filter(t => t.type === 'debit').reduce((sum, t) => sum + t.amount, 0).toLocaleString()}
+            $
+            {transactions
+              .filter((t) => t.type === "debit")
+              .reduce((sum, t) => sum + t.amount, 0)
+              .toLocaleString()}
           </div>
         </div>
         <div className="summary-card">
           <h4>Current Balance</h4>
           <div className="amount">
-            ${user?.account_balance?.toLocaleString() || '0'}
+            ${user?.account_balance?.toLocaleString() || "0"}
           </div>
         </div>
       </div>
-      
+
       <div className="transactions-table-container">
         <table className="transactions-table">
           <thead>
@@ -74,14 +82,18 @@ function Transactions() {
                 <td>{new Date(t.date).toLocaleDateString()}</td>
                 <td>{t.description}</td>
                 <td>
-                  <span className={`badge ${t.type === 'credit' ? 'badge-success' : 'badge-warning'}`}>
-                    {t.type === 'credit' ? 'Credit' : 'Debit'}
+                  <span
+                    className={`badge ${t.type === "credit" ? "badge-success" : "badge-warning"}`}
+                  >
+                    {t.type === "credit" ? "Credit" : "Debit"}
                   </span>
                 </td>
-                <td className={t.type === 'credit' ? 'positive' : 'negative'}>
-                  {t.type === 'credit' ? '+' : '-'}${t.amount.toLocaleString()}
+                <td className={t.type === "credit" ? "positive" : "negative"}>
+                  {t.type === "credit" ? "+" : "-"}${t.amount.toLocaleString()}
                 </td>
-                <td><span className="status-completed">Completed</span></td>
+                <td>
+                  <span className="status-completed">Completed</span>
+                </td>
               </tr>
             ))}
           </tbody>

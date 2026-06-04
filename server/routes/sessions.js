@@ -1,21 +1,21 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const pool = require('../db/pool');
-const crypto = require('crypto');
+const pool = require("../db/pool");
+const crypto = require("crypto");
 
 // In-memory sequence counters per session
 const seqCounters = new Map();
 
 // ─── POST /api/sessions/create ───────────────────────────────────────────────
-router.post('/create', async (req, res) => {
+router.post("/create", async (req, res) => {
   const { attackerIp } = req.body;
   const sessionId = crypto.randomUUID();
 
   try {
     await pool.query(
-      `INSERT INTO session_replays (session_id, ip, actions, created_at)
-       VALUES ($1, $2, '[]', NOW())`,
-      [sessionId, attackerIp || 'unknown']
+      `INSERT INTO session_recordings (session_id, attacker_ip, timestamp)
+       VALUES ($1, $2, NOW())`,
+      [sessionId, attackerIp || "unknown"],
     );
   } catch {
     // ignore — may already exist
@@ -26,7 +26,7 @@ router.post('/create', async (req, res) => {
 
 // ─── POST /api/sessions/:id/record ───────────────────────────────────────────
 // Internal use by middleware
-router.post('/:id/record', async (req, res) => {
+router.post("/:id/record", async (req, res) => {
   const { id } = req.params;
   const { method, path, body, responseCode } = req.body;
 
@@ -44,11 +44,9 @@ router.post('/:id/record', async (req, res) => {
 
   try {
     await pool.query(
-      `INSERT INTO session_replays (session_id, ip, actions, created_at)
-       VALUES ($1, 'unknown', $2, NOW())
-       ON CONFLICT (session_id) DO UPDATE
-         SET actions = (session_replays.actions::jsonb || $2::jsonb)::text`,
-      [id, JSON.stringify([entry])]
+      `INSERT INTO session_recordings (session_id, attacker_ip, request_method, request_path, request_body, response_code, timestamp, sequence_number)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)`,
+      [id, 'unknown', method, path, JSON.stringify(body || {}), responseCode, seq]
     );
     res.json({ success: true, sequence_number: seq });
   } catch (err) {
@@ -57,23 +55,21 @@ router.post('/:id/record', async (req, res) => {
 });
 
 // ─── GET /api/sessions/:id/replay ────────────────────────────────────────────
-router.get('/:id/replay', async (req, res) => {
+router.get("/:id/replay", async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query(
-      `SELECT * FROM session_replays WHERE session_id = $1`,
+      `SELECT session_id, attacker_ip, request_method, request_path, request_body, response_code, timestamp, sequence_number
+       FROM session_recordings 
+       WHERE session_id = $1
+       ORDER BY sequence_number ASC`,
       [id]
     );
     if (result.rows.length === 0) {
       return res.json({ success: false, error: 'Session not found' });
     }
-    const row = result.rows[0];
-    let actions = [];
-    try { actions = JSON.parse(row.actions); } catch { actions = []; }
 
-    // Sort by sequence_number if available
-    actions.sort((a, b) => (a.sequence_number || 0) - (b.sequence_number || 0));
-    res.json({ success: true, data: { session_id: id, ip: row.ip, created_at: row.created_at, actions } });
+    res.json({ success: true, data: { session_id: id, recordings: result.rows } });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
@@ -84,27 +80,25 @@ router.get('/:id/timeline', async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query(
-      `SELECT * FROM session_replays WHERE session_id = $1`,
+      `SELECT sequence_number, timestamp, request_method as method, request_path as path, 
+              response_code, request_body as body
+       FROM session_recordings 
+       WHERE session_id = $1
+       ORDER BY sequence_number ASC`,
       [id]
     );
     if (result.rows.length === 0) {
       return res.json({ success: false, error: 'Session not found' });
     }
-    const row = result.rows[0];
-    let actions = [];
-    try { actions = JSON.parse(row.actions); } catch { actions = []; }
-    actions.sort((a, b) => (a.sequence_number || 0) - (b.sequence_number || 0));
 
-    const timeline = actions.map((a, i) => ({
+    const timeline = result.rows.map((row, i) => ({
       step: i + 1,
-      timestamp: a.timestamp,
-      method: a.method,
-      path: a.path,
-      responseCode: a.responseCode,
-      payload: a.body,
-      timeSincePrevious: i > 0
-        ? new Date(a.timestamp) - new Date(actions[i - 1].timestamp)
-        : 0,
+      timestamp: row.timestamp,
+      method: row.method,
+      path: row.path,
+      responseCode: row.response_code,
+      payload: row.body,
+      timeSincePrevious: i > 0 ? new Date(row.timestamp) - new Date(result.rows[i - 1].timestamp) : 0,
     }));
 
     res.json({ success: true, data: timeline });
@@ -118,12 +112,11 @@ router.get('/ip/:ip', async (req, res) => {
   const { ip } = req.params;
   try {
     const result = await pool.query(
-      `SELECT session_id, ip, created_at,
-              jsonb_array_length(actions::jsonb) as request_count
-       FROM session_replays
-       WHERE ip = $1
-         AND session_id NOT LIKE 'honeytoken_%'
-       ORDER BY created_at DESC`,
+      `SELECT session_id, attacker_ip, COUNT(*) as request_count
+       FROM session_recordings
+       WHERE attacker_ip = $1
+       GROUP BY session_id, attacker_ip
+       ORDER BY MAX(timestamp) DESC`,
       [ip]
     );
     res.json({ success: true, data: result.rows });
@@ -136,10 +129,10 @@ router.get('/ip/:ip', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT session_id, ip, created_at
-       FROM session_replays
-       WHERE session_id NOT LIKE 'honeytoken_%'
-       ORDER BY created_at DESC
+      `SELECT DISTINCT session_id, attacker_ip, MIN(timestamp) as created_at, COUNT(*) as request_count
+       FROM session_recordings
+       GROUP BY session_id, attacker_ip
+       ORDER BY MIN(timestamp) DESC
        LIMIT 50`
     );
     res.json({ success: true, data: result.rows });

@@ -1,5 +1,5 @@
-const geoip = require('geoip-lite');
-const pool = require('../db/pool');
+const geoip = require("geoip-lite");
+const pool = require("../db/pool");
 
 async function enrich(ip) {
   try {
@@ -13,13 +13,15 @@ async function enrich(ip) {
       longitude: geo.ll[1],
     };
 
-    // Upsert into attacker_profiles — only update geo fields
-    await pool.query(
-      `UPDATE attacker_profiles
-         SET country = $2, city = $3, last_seen = NOW()
+    // Upsert into attacker_profiles — update geo fields including lat/long
+    await pool
+      .query(
+        `UPDATE attacker_profiles
+         SET country = $2, city = $3, latitude = $4, longitude = $5, last_seen = NOW()
        WHERE ip = $1`,
-      [ip, data.country, data.city]
-    ).catch(() => {}); // never crash
+        [ip, data.country, data.city, data.latitude, data.longitude],
+      )
+      .catch(() => {}); // never crash
 
     return data;
   } catch {
