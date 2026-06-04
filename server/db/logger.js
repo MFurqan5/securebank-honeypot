@@ -56,10 +56,9 @@ const mockGeoIPLocations = [
 // Severity to integer mapping (1-10)
 function severityToInteger(severity) {
   if (typeof severity === 'number') {
-    return Math.min(Math.max(severity, 1), 10); // Clamp between 1-10
+    return Math.min(Math.max(severity, 1), 10);
   }
   
-  // String mapping
   const map = {
     'LOW': 3,
     'MEDIUM': 5,
@@ -70,7 +69,7 @@ function severityToInteger(severity) {
     'high': 7,
     'critical': 9
   };
-  return map[severity] || 5; // Default to MEDIUM
+  return map[severity] || 5;
 }
 
 // Helper to parse OS and Tool from User Agent
@@ -122,6 +121,9 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
     console.log(`[LOGGER] Starting to log attack: ${attackType}, severity: ${severity}`);
     
     const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+    // Clean IP address (remove IPv6 prefix if present)
+    const cleanIp = ip.replace(/^::ffff:/, '');
+    
     const port = req.socket.remotePort || 0;
     const method = req.method;
     const path = req.originalUrl || req.path;
@@ -146,9 +148,9 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
       RETURNING id
     `;
     
-    console.log(`[LOGGER] Executing insert query for IP: ${ip}`);
+    console.log(`[LOGGER] Executing insert query for IP: ${cleanIp}`);
     const logResult = await pool.query(insertLogQuery, [
-      ip,
+      cleanIp,
       port,
       method,
       path,
@@ -164,30 +166,36 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
     
     console.log(`[LOGGER] Attack log inserted with ID: ${logResult.rows[0].id}`);
 
-    // Check if attacker profile exists, if not create, else update
+    // ============================================
+    // ATTACKER PROFILE UPDATE - FIXED VERSION
+    // ============================================
+    
+    // First, check if attacker profile exists
     const profileQuery = `SELECT * FROM attacker_profiles WHERE ip = $1`;
-    const profileRes = await pool.query(profileQuery, [ip]);
+    const profileRes = await pool.query(profileQuery, [cleanIp]);
+    
+    console.log(`[LOGGER] Profile exists for ${cleanIp}: ${profileRes.rows.length > 0}`);
 
     // Geolocation mapping
-    let country = "Local LAN";
-    let city = "Local Network";
-    let isp = "Private Range";
+    let country = "Unknown";
+    let city = "Unknown";
+    let isp = "Unknown";
     let latitude = null;
     let longitude = null;
 
     // Check if IP is local or private
     const isPrivateIP = (
-      ip === "127.0.0.1" ||
-      ip === "::1" ||
-      ip.startsWith("192.168") ||
-      ip.startsWith("10.") ||
-      ip.startsWith("172.") ||
-      ip.startsWith("::ffff:")
+      cleanIp === "127.0.0.1" ||
+      cleanIp === "::1" ||
+      cleanIp.startsWith("192.168") ||
+      cleanIp.startsWith("10.") ||
+      cleanIp.startsWith("172.") ||
+      cleanIp.startsWith("169.254")
     );
     
     if (isPrivateIP) {
       // Use hash of IP to select a stable mock location
-      const hash = ip.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+      const hash = cleanIp.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
       const idx = Math.abs(hash) % mockGeoIPLocations.length;
       const loc = mockGeoIPLocations[idx];
       country = loc.country;
@@ -195,7 +203,7 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
       isp = loc.isp;
       latitude = loc.lat;
       longitude = loc.lon;
-      console.log(`[LOGGER] Using mock location for ${ip}: ${country}, ${city}`);
+      console.log(`[LOGGER] Using mock location for ${cleanIp}: ${country}, ${city}`);
     }
 
     // Determine threat points based on attack type
@@ -206,53 +214,76 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
     else if (attackType === "bruteforce") points += 10;
     else if (attackType === "idor") points += 15;
     else if (attackType === "csrf") points += 10;
+    else if (attackType === "recon") points += 5;
 
     // Add severity points
     if (severityInt >= 9) points += 20;
     else if (severityInt >= 7) points += 10;
     else if (severityInt >= 4) points += 5;
+    else points += 2;
 
     console.log(`[LOGGER] Threat points calculated: ${points}`);
 
     if (profileRes.rows.length === 0) {
-      // Create new profile
+      // Create new profile - FIXED: Removed latitude/longitude from the VALUES list mismatch
       const newScore = Math.min(points, 100);
-      console.log(`[LOGGER] Creating new profile for ${ip} with score: ${newScore}`);
+      console.log(`[LOGGER] Creating new profile for ${cleanIp} with score: ${newScore}`);
       
+      // Check if all columns exist in your table
       const insertProfileQuery = `
         INSERT INTO attacker_profiles (
-          ip, first_seen, last_seen, total_requests, threat_score, 
-          country, city, isp, os, tool, is_known_malicious,
-          sqli_count, xss_count, bruteforce_count, traversal_count,
-          latitude, longitude
-        ) VALUES ($1, NOW(), NOW(), 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          ip, 
+          first_seen, 
+          last_seen, 
+          total_requests, 
+          threat_score, 
+          country, 
+          city, 
+          isp, 
+          os, 
+          tool, 
+          is_known_malicious,
+          sqli_count, 
+          xss_count, 
+          bruteforce_count, 
+          traversal_count
+        )
+        VALUES ($1, NOW(), NOW(), 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING ip
       `;
-      await pool.query(insertProfileQuery, [
-        ip,
-        newScore,
-        country,
-        city,
-        isp,
-        os,
-        tool,
-        newScore > 75,
-        attackType === "sqli" ? 1 : 0,
-        attackType === "xss" ? 1 : 0,
-        attackType === "bruteforce" ? 1 : 0,
-        attackType === "traversal" ? 1 : 0,
-        latitude,
-        longitude
-      ]);
-      console.log(`[LOGGER] New profile created for ${ip}`);
+      
+      try {
+        const insertResult = await pool.query(insertProfileQuery, [
+          cleanIp,
+          newScore,
+          country,
+          city,
+          isp,
+          os,
+          tool,
+          newScore > 75,
+          attackType === "sqli" ? 1 : 0,
+          attackType === "xss" ? 1 : 0,
+          attackType === "bruteforce" ? 1 : 0,
+          attackType === "traversal" ? 1 : 0
+        ]);
+        console.log(`[LOGGER] ✅ New profile created for ${cleanIp}`);
+      } catch (insertError) {
+        console.error(`[LOGGER ERROR] Failed to insert profile for ${cleanIp}:`, insertError.message);
+        // Don't re-throw, just log the error
+      }
     } else {
-      // Update existing profile
+      // Update existing profile - FIXED: Proper update query
       const profile = profileRes.rows[0];
-      const newTotal = profile.total_requests + 1;
+      const newTotal = (profile.total_requests || 0) + 1;
 
-      let sqli = profile.sqli_count + (attackType === "sqli" ? 1 : 0);
-      let xss = profile.xss_count + (attackType === "xss" ? 1 : 0);
-      let brute = profile.bruteforce_count + (attackType === "bruteforce" ? 1 : 0);
-      let traversal = profile.traversal_count + (attackType === "traversal" ? 1 : 0);
+      // Increment counters based on attack type
+      let sqli = (profile.sqli_count || 0) + (attackType === "sqli" ? 1 : 0);
+      let xss = (profile.xss_count || 0) + (attackType === "xss" ? 1 : 0);
+      let brute = (profile.bruteforce_count || 0) + (attackType === "bruteforce" ? 1 : 0);
+      let traversal = (profile.traversal_count || 0) + (attackType === "traversal" ? 1 : 0);
+      let idor = (profile.idor_count || 0) + (attackType === "idor" ? 1 : 0);
+      let csrf = (profile.csrf_count || 0) + (attackType === "csrf" ? 1 : 0);
 
       // Threat score recalculation with variety multiplier
       let uniqueTypes = 0;
@@ -260,60 +291,67 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
       if (xss > 0) uniqueTypes++;
       if (brute > 0) uniqueTypes++;
       if (traversal > 0) uniqueTypes++;
+      if (idor > 0) uniqueTypes++;
+      if (csrf > 0) uniqueTypes++;
 
-      let baseScore = (sqli * 20) + (xss * 15) + (traversal * 20) + (brute * 10);
+      let baseScore = (sqli * 20) + (xss * 15) + (traversal * 20) + (brute * 10) + (idor * 15) + (csrf * 10);
       let multiplier = uniqueTypes > 1 ? 1.5 : 1.0;
       let finalScore = Math.min(Math.round(baseScore * multiplier), 100);
       
-      console.log(`[LOGGER] Updating profile for ${ip}: newScore=${finalScore}, totalRequests=${newTotal}`);
+      console.log(`[LOGGER] Updating profile for ${cleanIp}: newScore=${finalScore}, totalRequests=${newTotal}`);
 
       const updateProfileQuery = `
         UPDATE attacker_profiles
-        SET last_seen = NOW(),
-            total_requests = $2,
-            threat_score = $3,
-            os = $4,
-            tool = $5,
-            is_known_malicious = $6,
-            sqli_count = $7,
-            xss_count = $8,
-            bruteforce_count = $9,
-            traversal_count = $10,
-            country = COALESCE($11, country),
-            city = COALESCE($12, city),
-            isp = COALESCE($13, isp),
-            latitude = COALESCE($14, latitude),
-            longitude = COALESCE($15, longitude)
+        SET 
+          last_seen = NOW(),
+          total_requests = $2,
+          threat_score = $3,
+          os = COALESCE($4, os),
+          tool = COALESCE($5, tool),
+          is_known_malicious = $6,
+          sqli_count = $7,
+          xss_count = $8,
+          bruteforce_count = $9,
+          traversal_count = $10,
+          country = COALESCE($11, country),
+          city = COALESCE($12, city),
+          isp = COALESCE($13, isp),
+          last_updated = NOW()
         WHERE ip = $1
       `;
-      await pool.query(updateProfileQuery, [
-        ip,
-        newTotal,
-        finalScore,
-        os,
-        tool,
-        finalScore > 75,
-        sqli,
-        xss,
-        brute,
-        traversal,
-        country,
-        city,
-        isp,
-        latitude,
-        longitude
-      ]);
-      console.log(`[LOGGER] Profile updated for ${ip}`);
+      
+      try {
+        await pool.query(updateProfileQuery, [
+          cleanIp,
+          newTotal,
+          finalScore,
+          os,
+          tool,
+          finalScore > 75,
+          sqli,
+          xss,
+          brute,
+          traversal,
+          country,
+          city,
+          isp
+        ]);
+        console.log(`[LOGGER] ✅ Profile updated for ${cleanIp}`);
+      } catch (updateError) {
+        console.error(`[LOGGER ERROR] Failed to update profile for ${cleanIp}:`, updateError.message);
+      }
     }
 
-    console.log(`🛡️ Attack logged: [${attackType.toUpperCase()}] from ${ip} - Score updated`);
+    console.log(`🛡️ Attack logged: [${attackType.toUpperCase()}] from ${cleanIp} - Score updated`);
     return logResult.rows[0].id;
   } catch (error) {
     console.error("[LOGGER ERROR] Error logging attack to DB:", error);
     console.error("[LOGGER ERROR] Attack type:", attackType);
     console.error("[LOGGER ERROR] Severity:", severity);
     console.error("[LOGGER ERROR] Error details:", error.message);
-    // Don't throw the error, just return null to not break the main flow
+    if (error.stack) {
+      console.error("[LOGGER ERROR] Stack trace:", error.stack);
+    }
     return null;
   }
 }
@@ -324,6 +362,7 @@ async function logSessionAction(ip, sessionId, action) {
     console.log(`[SESSION LOGGER] Logging action for IP: ${ip}, Session: ${sessionId}`);
     
     const seqNum = Math.floor(Math.random() * 10000) + 1;
+    const cleanIp = ip.replace(/^::ffff:/, '');
 
     const query = `
       INSERT INTO session_recordings (
@@ -337,15 +376,31 @@ async function logSessionAction(ip, sessionId, action) {
     const path = action.page || action.target || "";
     const body = JSON.stringify(action);
 
-    await pool.query(query, [sessionId, ip, method, path, body, 200, seqNum]);
+    await pool.query(query, [sessionId, cleanIp, method, path, body, 200, seqNum]);
     console.log(`[SESSION LOGGER] Session action logged successfully`);
   } catch (error) {
     console.error("[SESSION LOGGER ERROR] Error logging session replay action:", error);
   }
 }
 
+// Helper function to get attacker profile by IP
+async function getAttackerProfile(ip) {
+  try {
+    const cleanIp = ip.replace(/^::ffff:/, '');
+    const result = await pool.query(
+      'SELECT * FROM attacker_profiles WHERE ip = $1',
+      [cleanIp]
+    );
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error("[GET PROFILE ERROR]", error);
+    return null;
+  }
+}
+
 module.exports = {
   logAttack,
   logSessionAction,
+  getAttackerProfile,
   mockGeoIPLocations,
 };

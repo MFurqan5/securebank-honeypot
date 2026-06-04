@@ -1,5 +1,5 @@
 const geoip = require("geoip-lite");
-const pool = require("../db/pool");
+const pool = require('../db/connection'); // Fixed import
 
 async function enrich(ip) {
   try {
