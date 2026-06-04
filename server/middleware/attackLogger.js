@@ -6,6 +6,9 @@ const abuseipdb = require('../services/abuseipdb');
 // In-memory rate tracker for brute force detection: { ip: [timestamps] }
 const loginAttempts = new Map();
 
+// Token expiry tracking: { ip: { expiryAttempts, lastAttempt } }
+const expiredTokenAttempts = new Map();
+
 // ─── Classification ─────────────────────────────────────────────────────────
 function classifyAttack(payload, path, method) {
   const p = (payload || '').toLowerCase();
@@ -20,9 +23,9 @@ function classifyAttack(payload, path, method) {
       else if (p.includes('or 1=1') || p.includes("or '1'='1")) sub = 'auth_bypass';
       else if (p.includes('sleep(')) sub = 'blind';
 
-      let severity = 'MEDIUM';
-      if (sub === 'union_based' || sub === 'blind') severity = 'CRITICAL';
-      else if (sub === 'auth_bypass') severity = 'HIGH';
+      let severity = 8; // MEDIUM-HIGH
+      if (sub === 'union_based' || sub === 'blind') severity = 9; // CRITICAL
+      else if (sub === 'auth_bypass') severity = 8; // HIGH
 
       return { attack_type: 'sqli', sub_attack_type: sub, severity };
     }
@@ -33,8 +36,8 @@ function classifyAttack(payload, path, method) {
   for (const pat of xssPatterns) {
     if (p.includes(pat.toLowerCase())) {
       const sub = (method === 'POST' && pathLower.includes('/comments')) ? 'stored' : 'reflected';
-      let severity = 'HIGH';
-      if (p.includes('document.cookie') || p.includes('fetch(')) severity = 'CRITICAL';
+      let severity = 7; // HIGH
+      if (p.includes('document.cookie') || p.includes('fetch(')) severity = 9; // CRITICAL
 
       return { attack_type: 'xss', sub_attack_type: sub, severity };
     }
@@ -45,13 +48,13 @@ function classifyAttack(payload, path, method) {
   const sensitiveFiles = ['/etc/passwd', '/etc/shadow', '/proc/', '/windows/system32'];
   for (const pat of traversalPatterns) {
     if (p.includes(pat.toLowerCase())) {
-      const severity = sensitiveFiles.some(f => p.includes(f)) ? 'CRITICAL' : 'HIGH';
+      const severity = sensitiveFiles.some(f => p.includes(f)) ? 9 : 7; // 9=CRITICAL, 7=HIGH
       return { attack_type: 'traversal', sub_attack_type: 'path_traversal', severity };
     }
   }
   for (const f of sensitiveFiles) {
     if (p.includes(f)) {
-      return { attack_type: 'traversal', sub_attack_type: 'path_traversal', severity: 'CRITICAL' };
+      return { attack_type: 'traversal', sub_attack_type: 'path_traversal', severity: 9 }; // CRITICAL
     }
   }
 
@@ -59,11 +62,11 @@ function classifyAttack(payload, path, method) {
   const reconPaths = ['/admin', '/wp-login', '/.env', '/phpinfo', '/config', '/.git', '/backup'];
   for (const rp of reconPaths) {
     if (pathLower.includes(rp)) {
-      return { attack_type: 'recon', sub_attack_type: 'recon_scan', severity: 'LOW' };
+      return { attack_type: 'recon', sub_attack_type: 'recon_scan', severity: 3 }; // LOW
     }
   }
 
-  return { attack_type: null, sub_attack_type: null, severity: 'LOW' };
+  return { attack_type: null, sub_attack_type: null, severity: 1 }; // LOW
 }
 
 // ─── Brute force tracker ────────────────────────────────────────────────────
@@ -79,6 +82,60 @@ function checkBruteForce(ip, path, method) {
   loginAttempts.set(ip, attempts);
 
   return attempts.length > 5;
+}
+
+// ─── Expired token tracker ──────────────────────────────────────────────────
+async function checkExpiredTokenUsage(ip, payload, sourceIp, pool) {
+  // Extract bearer token from Authorization header (passed in payload)
+  const bearerMatch = payload.match(/Bearer\s+([^\s"']+)/i);
+  if (!bearerMatch) return null;
+
+  const token = bearerMatch[1];
+  try {
+    // Check if this token exists in honeytokens and is expired
+    const result = await pool.query(
+      `SELECT id, expires_at, status, type FROM honeytokens 
+       WHERE (value::text ILIKE '%' || $1 || '%' OR id::text = $1)
+       AND status IN ('active', 'triggered', 'expired')
+       LIMIT 1`,
+      [token.slice(0, 50)] // partial match to avoid exact key matching
+    ).catch(() => ({ rows: [] }));
+
+    if (result.rows && result.rows.length > 0) {
+      const token_record = result.rows[0];
+      const now = new Date();
+      const expiresAt = new Date(token_record.expires_at);
+      const isExpired = now > expiresAt;
+
+      if (isExpired) {
+        // Track this expired token reuse
+        if (!expiredTokenAttempts.has(ip)) {
+          expiredTokenAttempts.set(ip, { count: 0, lastAttempt: now });
+        }
+        const tracker = expiredTokenAttempts.get(ip);
+        tracker.count++;
+        tracker.lastAttempt = now;
+
+        // Update honeytokens to mark it as reused after expiry
+        await pool.query(
+          `UPDATE honeytokens SET expired_use_at = NOW() WHERE id = $1`,
+          [token_record.id]
+        ).catch(() => {});
+
+        return {
+          isExpired: true,
+          tokenId: token_record.id,
+          tokenType: token_record.type,
+          expiryTime: expiresAt.toISOString(),
+          expiredSeconds: Math.floor((now - expiresAt) / 1000)
+        };
+      }
+    }
+  } catch (err) {
+    // Silently fail - don't crash the middleware
+  }
+
+  return null;
 }
 
 // ─── Session sequence counter ────────────────────────────────────────────────
@@ -116,10 +173,21 @@ function attackLogger(req, res, next) {
       // Build payload string
       const payload = JSON.stringify({ query: req.query, body: req.body });
 
+      // Check for expired token reuse
+      const expiredTokenInfo = await checkExpiredTokenUsage(sourceIp, payload, sourceIp, pool);
+
       // Brute force check first
       let classification;
-      if (checkBruteForce(sourceIp, path, method)) {
-        classification = { attack_type: 'bruteforce', sub_attack_type: 'credential', severity: 'MEDIUM' };
+      if (expiredTokenInfo) {
+        // Expired token reuse detected
+        classification = {
+          attack_type: 'expired_token_reuse',
+          sub_attack_type: 'honeytoken_reuse',
+          severity: 8, // HIGH
+          expiredTokenInfo
+        };
+      } else if (checkBruteForce(sourceIp, path, method)) {
+        classification = { attack_type: 'bruteforce', sub_attack_type: 'credential', severity: 6 }; // MEDIUM
       } else {
         classification = classifyAttack(payload, path, method);
       }
@@ -147,12 +215,12 @@ function attackLogger(req, res, next) {
       const bruteInc = attack_type === 'bruteforce' ? 1 : 0;
       const traversalInc = attack_type === 'traversal' ? 1 : 0;
 
-      // Compute threat score delta
+      // Compute threat score delta based on integer severity (1-10)
       let delta = 0;
-      if (severity === 'CRITICAL') delta = 20;
-      else if (severity === 'HIGH') delta = 10;
-      else if (severity === 'MEDIUM') delta = 5;
-      else delta = 1;
+      if (severity >= 9) delta = 20;       // CRITICAL
+      else if (severity >= 7) delta = 10;  // HIGH
+      else if (severity >= 4) delta = 5;   // MEDIUM
+      else delta = 1;                      // LOW
 
       await pool.query(
         `INSERT INTO attacker_profiles

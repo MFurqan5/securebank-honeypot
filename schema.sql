@@ -240,13 +240,17 @@ CREATE TABLE ioc_records (
 
 -- honeytokens — fake credentials/API keys planted in responses to trap attackers
 CREATE TABLE honeytokens (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    type         VARCHAR(50),                            -- 'credential' | 'apikey' | 'file'
-    value        JSONB,                                  -- the fake data object
-    attacker_ip  VARCHAR(45) REFERENCES attacker_profiles(ip) ON DELETE SET NULL,
-    created_at   TIMESTAMPTZ DEFAULT NOW(),
-    triggered_at TIMESTAMPTZ,
-    status       VARCHAR(20) DEFAULT 'active'            -- 'active' | 'triggered' | 'inactive'
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type            VARCHAR(50),                            -- 'credential' | 'apikey' | 'file'
+    value           JSONB,                                  -- the fake data object
+    attacker_ip     VARCHAR(45) REFERENCES attacker_profiles(ip) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    issued_at       TIMESTAMPTZ DEFAULT NOW(),              -- when token was issued to attacker
+    expires_at      TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '24 hours'), -- token expiry time (24h default)
+    triggered_at    TIMESTAMPTZ,
+    expired_use_at  TIMESTAMPTZ,                            -- when expired token was attempted to be reused
+    status          VARCHAR(20) DEFAULT 'active',           -- 'active' | 'triggered' | 'inactive' | 'expired'
+    ttl_seconds     INTEGER DEFAULT 86400                   -- time-to-live in seconds (24h = 86400s)
 );
 
 -- session_recordings — every HTTP request an attacker makes, in sequence

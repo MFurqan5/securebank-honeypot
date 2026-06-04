@@ -39,21 +39,32 @@ async function createHoneytoken(attackerIp) {
       email: 'backup@securebank.internal',
     };
 
-    // Store in session_replays table (since honeytokens table doesn't exist in current DB)
-    // We embed it as a special session action
     const tokenId = crypto.randomUUID();
+    const ttlSeconds = 24 * 60 * 60; // 24 hours
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
+
+    // Insert honeytoken with expiry tracking
     await pool.query(
-      `INSERT INTO session_replays (session_id, ip, actions, created_at)
-       VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (session_id) DO NOTHING`,
+      `INSERT INTO honeytokens 
+        (id, type, value, attacker_ip, created_at, issued_at, expires_at, status, ttl_seconds)
+       VALUES ($1, $2, $3, $4, NOW(), NOW(), $5, 'active', $6)`,
       [
-        `honeytoken_${tokenId}`,
-        attackerIp,
-        JSON.stringify([{ type: 'honeytoken', tokenId, fakeData, created_at: new Date().toISOString() }])
+        tokenId,
+        type,
+        JSON.stringify(fakeData),
+        attackerIp || 'unknown',
+        expiresAt,
+        ttlSeconds
       ]
     ).catch(() => {});
 
-    return { tokenId, fakeData };
+    return { 
+      tokenId, 
+      fakeData, 
+      expiresAt: expiresAt.toISOString(),
+      ttlSeconds
+    };
   } catch {
     return null;
   }
@@ -91,6 +102,9 @@ router.post('/login', async (req, res) => {
   const sourceIp = (req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim();
   const honeyResult = await createHoneytoken(sourceIp);
 
+  const fakeJwt = makeFakeJwt();
+  const jwtExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h from now
+
   const responseUser = {
     name: user.full_name || user.username,
     accountNumber: user.account_number || 'ACC10001',
@@ -103,13 +117,17 @@ router.post('/login', async (req, res) => {
 
   res.json({
     success: true,
-    token: makeFakeJwt(),
+    token: fakeJwt,
+    expiresIn: 86400, // 24 hours in seconds
+    expiresAt: jwtExpiry.toISOString(),
     user: responseUser,
     // Subtle honeytoken — a thorough attacker might copy these
     _cache: honeyResult ? honeyResult.fakeData : undefined,
+    _honeytoken_expires: honeyResult ? honeyResult.expiresAt : undefined,
     _debug: {
       session: randomHex(16),
       internal_service_creds: honeyResult ? `${honeyResult.fakeData.username}:${honeyResult.fakeData.password}` : undefined,
+      ttl_seconds: honeyResult ? honeyResult.ttlSeconds : undefined,
     },
   });
 });
@@ -233,12 +251,20 @@ router.post('/transfer', async (req, res) => {
 
 // ─── GET /api/session ────────────────────────────────────────────────────────
 // Weak predictable token — no signing, no secret
+// Now includes expiry tracking for honeypot analysis
 router.get('/session', async (req, res) => {
-  const { username = 'guest' } = req.query;
+  const { username = 'guest', ttl = '3600' } = req.query; // default 1 hour
+  const ttlSeconds = Math.min(parseInt(ttl) || 3600, 86400); // cap at 24h
   const weakToken = Buffer.from(username + ':' + Date.now()).toString('base64');
+  
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
+
   res.json({
     success: true,
     token: weakToken,
+    expiresIn: ttlSeconds,
+    expiresAt: expiresAt.toISOString(),
     token_format: 'base64(username:timestamp)',
     note: 'Session tokens are base64 encoded — easily decodable',
   });
