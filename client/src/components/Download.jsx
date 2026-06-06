@@ -6,6 +6,8 @@ function Download() {
   const [filename, setFilename] = useState('');
   const [files, setFiles] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
   useEffect(() => {
     loadFiles();
@@ -13,32 +15,60 @@ function Download() {
 
   const loadFiles = async () => {
     try {
-      const user = JSON.parse(localStorage.getItem('user'));
-      const response = await axios.get('/api/download', {
-        params: { file: 'list' },
-        headers: { 'x-user-id': user?.id }
+      const user = JSON.parse(localStorage.getItem('user') || 'null');
+      // FIX: Don't use 'list' as file parameter
+      const response = await axios.get(`${API_URL}/api/downloads`, {
+        params: { file: '' }, // Empty to get available files list
+        headers: { 'x-user-id': user?.user_id || user?.id || 1 }
       });
+      
       if (response.data.available_files) {
         setFiles(response.data.available_files);
       }
     } catch (error) {
       console.error('Error loading files:', error);
+      // Set some default decoy files if API fails
+      setFiles([
+        { name: 'statement_january.pdf', date: new Date().toISOString(), size: '124 KB' },
+        { name: 'statement_february.pdf', date: new Date().toISOString(), size: '118 KB' },
+        { name: 'tax_documents.zip', date: new Date().toISOString(), size: '2.3 MB' }
+      ]);
     }
   };
 
   const handleDownload = async (e) => {
     e.preventDefault();
+    if (!filename.trim()) {
+      alert('Please enter a filename');
+      return;
+    }
+    
     setIsLoading(true);
+    setError(null);
+    setResult(null);
+    
     try {
-      const user = JSON.parse(localStorage.getItem('user'));
-      const response = await axios.get('/api/download', {
+      const user = JSON.parse(localStorage.getItem('user') || 'null');
+      // FIX: Use correct API endpoint
+      const response = await axios.get(`${API_URL}/api/downloads`, {
         params: { file: filename },
-        headers: { 'x-user-id': user?.id }
+        headers: { 'x-user-id': user?.user_id || user?.id || 1 }
       });
       setResult(response.data);
+      
+      // Show warning if traversal detected
+      if (response.data.traversal_detected) {
+        alert('⚠️ DIRECTORY TRAVERSAL ATTEMPT DETECTED! This has been logged.');
+      }
     } catch (error) {
       console.error('Download error:', error);
-      setResult({ error: true, message: 'Error downloading file' });
+      setError('Error downloading file. Please try again.');
+      setResult({ 
+        error: true, 
+        message: 'Error downloading file',
+        requested_file: filename,
+        traversal_detected: false
+      });
     } finally {
       setIsLoading(false);
     }
@@ -47,9 +77,10 @@ function Download() {
   const traversalPayloads = [
     { name: "Linux Passwd", payload: "../../../etc/passwd", description: "Access system password file" },
     { name: "Windows Win.ini", payload: "..\\..\\..\\windows\\win.ini", description: "Access Windows configuration" },
-    { name: "App Source Code", payload: "../../../index.js", description: "Read application source" },
+    { name: "App Source Code", payload: "../../../server.js", description: "Read application source" },
     { name: "Environment File", payload: "../../../.env", description: "Read environment variables" },
-    { name: "Database File", payload: "../../../securebank.db", description: "Download database" }
+    { name: "AWS Keys", payload: "api_keys.json", description: "Download fake API keys (honeytoken)" },
+    { name: "Database Config", payload: "../../../config/database.js", description: "Read database configuration" }
   ];
 
   return (
@@ -67,8 +98,15 @@ function Download() {
         <p>This download function is vulnerable to Directory Traversal attacks. Attackers can access any file on the server!</p>
       </div>
 
+      {error && (
+        <div className="error-box">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
       <div className="traversal-test-section">
         <h3>🎯 Directory Traversal Test Payloads</h3>
+        <p className="test-note">Click any payload to test path traversal vulnerability</p>
         <div className="payload-grid">
           {traversalPayloads.map((payload, i) => (
             <button 
@@ -76,7 +114,7 @@ function Download() {
               className="payload-btn traversal"
               onClick={() => {
                 setFilename(payload.payload);
-                setTimeout(() => handleDownload({ preventDefault: () => {} }), 100);
+                setResult(null);
               }}
               title={payload.description}
             >
@@ -115,14 +153,20 @@ function Download() {
             {result.file_content && (
               <div className="file-preview">
                 <strong>File Content Preview:</strong>
-                <pre>{result.file_content}</pre>
+                <pre className="file-content">{result.file_content.substring(0, 1000)}</pre>
+                {result.file_content.length > 1000 && <p>... (truncated)</p>}
               </div>
             )}
             {result.traversal_detected && (
               <div className="traversal-warning">
                 <strong>⚠️ This attack has been logged!</strong>
-                <p>IP: {result.attacker_ip || 'Logged'}</p>
                 <p>Type: Directory Traversal Attack</p>
+                <p>This incident has been reported to the SOC team.</p>
+              </div>
+            )}
+            {result.decoy_notice && (
+              <div className="decoy-notice">
+                <strong>🪤 {result.decoy_notice}</strong>
               </div>
             )}
           </div>
@@ -130,18 +174,35 @@ function Download() {
       )}
 
       <div className="legitimate-files">
-        <h3>📚 Your Documents</h3>
-        <div className="files-grid">
-          {files.map((file, i) => (
-            <div key={i} className="file-card" onClick={() => setFilename(file.name)}>
-              <div className="file-icon">📄</div>
-              <div className="file-info">
-                <div className="file-name">{file.name}</div>
-                <div className="file-meta">{file.date} • {file.size}</div>
+        <h3>📚 Available Documents</h3>
+        {files.length > 0 ? (
+          <div className="files-grid">
+            {files.map((file, i) => (
+              <div 
+                key={i} 
+                className={`file-card ${file.sensitive ? 'sensitive-file' : ''}`}
+                onClick={() => {
+                  setFilename(file.name);
+                  setResult(null);
+                }}
+              >
+                <div className="file-icon">{file.sensitive ? '🪤' : '📄'}</div>
+                <div className="file-info">
+                  <div className="file-name">{file.name}</div>
+                  <div className="file-meta">
+                    {file.date ? new Date(file.date).toLocaleDateString() : 'Unknown date'}
+                    {file.size && ` • ${file.size}`}
+                  </div>
+                  {file.sensitive && (
+                    <div className="decoy-badge">Honeytoken File</div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <p>Loading available documents...</p>
+        )}
       </div>
 
       <div className="info-box">
@@ -149,7 +210,7 @@ function Download() {
         <p>1. Attacker uses <code>../</code> sequences to navigate up directories</p>
         <p>2. Can access <code>/etc/passwd</code>, <code>.env</code>, or source code</p>
         <p>3. Example: <code>?file=../../../etc/passwd</code></p>
-        <p>4. Server reads and returns sensitive files</p>
+        <p>4. Server reads and returns sensitive files (decoy files for honeypot)</p>
       </div>
     </div>
   );

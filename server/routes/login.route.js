@@ -40,15 +40,18 @@ router.post('/', async (req, res) => {
   
   const payloadLower = (username || '').toLowerCase() + ' ' + (password || '').toLowerCase()
   let isSqlInjection = false
+  let matchedPattern = null
+  
   for (const pattern of sqlPatterns) {
     if (payloadLower.includes(pattern.toLowerCase())) {
       isSqlInjection = true
+      matchedPattern = pattern
       console.log(`[SQLi DETECTED] Pattern matched: ${pattern}`)
       break
     }
   }
 
-  // VULNERABLE Query construction (concatenation)
+  // VULNERABLE Query construction (concatenation) - INTENTIONAL FOR HONEYPOT
   const query = `SELECT * FROM users WHERE username='${username}' AND password='${password}'`
   console.log('[HONEYPOT] Executing query:', query)
 
@@ -65,7 +68,6 @@ router.post('/', async (req, res) => {
       console.log('[LOGGER] SQL injection logged successfully')
 
       // Feature 1 — Deception Technology (Honeytokens / Decoy Data)
-      // Return a convincing fake success page with fake secret admin details and a fake API token.
       return res.json({
         success: true,
         message: 'Login successful (Bypass)',
@@ -77,7 +79,7 @@ router.post('/', async (req, res) => {
           account_balance: 5543209.50,
           account_number: 'ACC99999',
           role: 'admin',
-          decoy_secret_token: 'aws_access_key_id=AKIAIOSFODNN7DECOYKEY' // Planted fake token
+          decoy_secret_token: 'aws_access_key_id=AKIAIOSFODNN7DECOYKEY'
         }
       })
     }
@@ -87,6 +89,13 @@ router.post('/', async (req, res) => {
     if (result.rows.length > 0) {
       const user = result.rows[0]
       console.log(`[SUCCESS] User ${username} logged in successfully`)
+      
+      // Update last_login
+      await pool.query(
+        'UPDATE users SET last_login = NOW() WHERE user_id = $1',
+        [user.user_id]
+      ).catch(() => {})
+      
       res.json({
         success: true,
         message: 'Login successful',
@@ -101,7 +110,16 @@ router.post('/', async (req, res) => {
         }
       })
     } else {
-      // Log as potential brute force / weak authentication scan
+      // Update failed login attempts
+      await pool.query(
+        `UPDATE users 
+         SET failed_login_attempts = failed_login_attempts + 1,
+             is_locked = CASE WHEN failed_login_attempts >= 5 THEN TRUE ELSE is_locked END
+         WHERE username = $1`,
+        [username]
+      ).catch(() => {})
+      
+      // Log as potential brute force
       console.log(`[FAILED] Invalid login attempt for username: ${username}`)
       await logAttack(req, {
         attackType: 'bruteforce',
@@ -117,7 +135,7 @@ router.post('/', async (req, res) => {
       })
     }
   } catch (err) {
-    // If it's a SQL syntax error (meaning their SQLi query broke syntax), return fake success decoy anyway!
+    // SQL syntax error from injection - return fake success
     console.error('[ERROR] SQL syntax error from injection:', err.message)
     
     console.log('[LOGGER] Logging SQL injection syntax error...')
@@ -125,11 +143,12 @@ router.post('/', async (req, res) => {
       attackType: 'sqli',
       severity: severityMap.HIGH,
       payload: username,
-      responseCode: 200
+      responseCode: 200,
+      subAttackType: 'syntax_error'
     })
     console.log('[LOGGER] SQL injection logged successfully')
 
-    // Return fake admin success to bypass authentication and deceive the attacker
+    // Return fake admin success
     return res.json({
       success: true,
       message: 'Login successful (Deceptive Bypass)',

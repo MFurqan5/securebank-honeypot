@@ -1,202 +1,255 @@
-const axios = require("axios");
-const nodemailer = require("nodemailer");
-const { exec } = require("child_process");
-const pool = require("../db/pool");
+const pool = require('../db/connection');
+const { logAttack } = require('../db/logger');
 
-// ─── Email transporter ─────────────────────────────────────────────────────
-let transporter = null;
-function getTransporter() {
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.gmail.com",
-      port: parseInt(process.env.SMTP_PORT || "587"),
-      secure: false,
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-    });
-  }
-  return transporter;
-}
-
-// ─── Telegram ──────────────────────────────────────────────────────────────
-async function sendTelegram(text) {
-  if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return;
-  try {
-    await axios.post(
-      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        chat_id: process.env.TELEGRAM_CHAT_ID,
-        text,
-        parse_mode: "Markdown",
-      },
-      { timeout: 5000 },
-    );
-  } catch (err) {
-    console.error("[AlertEngine] Telegram failed:", err.message);
-  }
-}
-
-// ─── Email ─────────────────────────────────────────────────────────────────
-async function sendEmail(subject, html) {
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return;
-  try {
-    await getTransporter().sendMail({
-      from: process.env.SMTP_USER,
-      to: process.env.ALERT_EMAIL_TO || process.env.SMTP_USER,
-      subject,
-      html,
-    });
-  } catch (err) {
-    console.error("[AlertEngine] Email failed:", err.message);
-  }
-}
-
-// ─── IP Block (iptables — only works on Linux with root) ────────────────────
-function blockIP(ip) {
-  exec(`iptables -A INPUT -s ${ip} -j DROP`, (err) => {
-    if (err)
-      console.error("[AlertEngine] Block failed (not root?):", err.message);
-    else console.log(`[AlertEngine] Blocked IP: ${ip}`);
-  });
-
-  // Log to ioc_records
-  pool
-    .query(
-      `INSERT INTO ioc_records (ip, attack_types, threat_score, blocked_automatically, blocked_at)
-     VALUES ($1, 'auto-block', 100, TRUE, NOW())
-     ON CONFLICT DO NOTHING`,
-      [ip],
-    )
-    .catch(() => {});
-}
-
-// ─── CRITICAL alert (called directly by honeytoken trigger) ────────────────
-async function sendCritical(details) {
-  const { ip, country, attack_type, payload, timestamp, honeytokenId } =
-    details;
-  const label = "CRITICAL";
-  const safePayload = (payload || "").slice(0, 100);
-
-  const tgText = `🚨 *SECUREBANK SOC ALERT*\nSeverity: ${label}\nIP: ${ip} (${country || "Unknown"})\nAttack: ${attack_type || "HONEYTOKEN_TRIGGERED"}\nPayload: ${safePayload}\nTime: ${timestamp || new Date().toISOString()}\nHoneytoken: ${honeytokenId || "N/A"}`;
-  await sendTelegram(tgText);
-
-  const emailHtml = `<h2>🚨 SECUREBANK HONEYTOKEN CRITICAL ALERT</h2>
-    <table border="1" cellpadding="5">
-      <tr><td><b>IP</b></td><td>${ip}</td></tr>
-      <tr><td><b>Country</b></td><td>${country || "Unknown"}</td></tr>
-      <tr><td><b>Attack Type</b></td><td>${attack_type || "HONEYTOKEN_TRIGGERED"}</td></tr>
-      <tr><td><b>Honeytoken ID</b></td><td>${honeytokenId || "N/A"}</td></tr>
-      <tr><td><b>Payload</b></td><td>${safePayload}</td></tr>
-      <tr><td><b>Time</b></td><td>${timestamp || new Date().toISOString()}</td></tr>
-    </table>`;
-  await sendEmail(`[SOC ALERT] CRITICAL — HONEYTOKEN from ${ip}`, emailHtml);
-}
-
-// ─── Poll loop ──────────────────────────────────────────────────────────────
-let alertedIds = new Set();
-let alertedKnownMalicious = new Set();
-
-async function poll() {
-  try {
-    // Rule 1: severity >= 7 attacks (HIGH=7, CRITICAL=9)
-    const sevRes = await pool.query(
-      `SELECT id, source_ip, country, attack_type, payload, timestamp, severity
-       FROM attack_logs
-       WHERE severity >= 7
-         AND id > $1
-       ORDER BY id ASC
-       LIMIT 20`,
-      [Math.max(...[...alertedIds].filter((n) => typeof n === "number"), 0)],
-    );
-
-    for (const row of sevRes.rows) {
-      if (alertedIds.has(row.id)) continue;
-      alertedIds.add(row.id);
-
-      const tgText = `🚨 *SECUREBANK SOC ALERT*\nSeverity: ${row.severity}\nIP: ${row.source_ip} (${row.country || "Unknown"})\nAttack: ${row.attack_type}\nPayload: ${(row.payload || "").slice(0, 100)}\nTime: ${row.timestamp}`;
-      await sendTelegram(tgText);
-
-      const emailHtml = `<h2>SECUREBANK SOC ALERT</h2>
-        <p><b>Severity:</b> ${row.severity}</p>
-        <p><b>IP:</b> ${row.source_ip}</p>
-        <p><b>Attack:</b> ${row.attack_type}</p>
-        <p><b>Payload:</b> ${(row.payload || "").slice(0, 200)}</p>
-        <p><b>Time:</b> ${row.timestamp}</p>`;
-      await sendEmail(
-        `[SOC ALERT] ${row.severity} — ${row.attack_type} from ${row.source_ip}`,
-        emailHtml,
-      );
-    }
-
-    // Rule 2: Aggressive attackers — >10 requests in last 60 seconds
-    const aggressiveRes = await pool.query(
-      `SELECT source_ip, COUNT(*) as cnt
-       FROM attack_logs
-       WHERE timestamp > NOW() - INTERVAL '60 seconds'
-       GROUP BY source_ip
-       HAVING COUNT(*) > 10`,
-    );
-    for (const row of aggressiveRes.rows) {
-      const key = `agg:${row.source_ip}:${Math.floor(Date.now() / 60000)}`;
-      if (alertedIds.has(key)) continue;
-      alertedIds.add(key);
-      await sendTelegram(
-        `⚡ *AGGRESSIVE ATTACKER*\nIP: ${row.source_ip}\nRequests in last 60s: ${row.cnt}\nAction: Rate limit / Block recommended`,
-      );
-      blockIP(row.source_ip);
-    }
-
-    // Rule 3: Known malicious IPs on first appearance
-    const maliciousRes = await pool.query(
-      `SELECT ip, country, tool, threat_score
-       FROM attacker_profiles
-       WHERE is_known_malicious = TRUE`,
-    );
-    for (const row of maliciousRes.rows) {
-      if (alertedKnownMalicious.has(row.ip)) continue;
-      alertedKnownMalicious.add(row.ip);
-      await sendTelegram(
-        `🔴 *KNOWN MALICIOUS IP DETECTED*\nIP: ${row.ip} (${row.country || "Unknown"})\nTool: ${row.tool || "Unknown"}\nThreat Score: ${row.threat_score}`,
-      );
-    }
-
-    // Rule 4: High threat score escalation
-    const threatRes = await pool.query(
-      `SELECT ip, country, threat_score, tool
-       FROM attacker_profiles
-       WHERE threat_score > 80`,
-    );
-    for (const row of threatRes.rows) {
-      const key = `threat:${row.ip}`;
-      if (alertedIds.has(key)) continue;
-      alertedIds.add(key);
-      await sendTelegram(
-        `📈 *HIGH THREAT ESCALATION*\nIP: ${row.ip} (${row.country || "Unknown"})\nThreat Score: ${row.threat_score}/100\nTool: ${row.tool || "Unknown"}\nAction: Blocking IP`,
-      );
-      blockIP(row.ip);
-    }
-
-    // Keep alertedIds from growing unboundedly
-    if (alertedIds.size > 10000) {
-      alertedIds = new Set([...alertedIds].slice(-5000));
-    }
-  } catch (err) {
-    console.error("[AlertEngine] Poll error:", err.message);
-  }
-}
-
-function startPolling() {
-  console.log("[AlertEngine] Starting alert polling every 10s");
-  poll(); // run immediately once
-  setInterval(poll, 10000);
-}
-
-module.exports = {
-  startPolling,
-  sendCritical,
-  sendTelegram,
-  sendEmail,
-  blockIP,
+// Severity mapping
+const severityMap = {
+  LOW: 3,
+  MEDIUM: 5,
+  HIGH: 7,
+  CRITICAL: 9
 };
+
+class AlertEngine {
+  constructor() {
+    this.pollingInterval = null;
+    this.lastProcessedId = 0;
+    this.isRunning = false;
+  }
+
+  // Start polling for new attacks
+  startPolling(intervalMs = 10000) {
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+    }
+    
+    console.log('[AlertEngine] Starting polling every', intervalMs, 'ms');
+    
+    // Initial load of last processed ID
+    this.loadLastProcessedId();
+    
+    this.pollingInterval = setInterval(() => {
+      this.checkForNewAttacks();
+    }, intervalMs);
+  }
+
+  async loadLastProcessedId() {
+    try {
+      const result = await pool.query(`
+        SELECT MAX(id) as last_id FROM attack_logs
+      `);
+      this.lastProcessedId = parseInt(result.rows[0]?.last_id) || 0;
+      console.log('[AlertEngine] Last processed ID:', this.lastProcessedId);
+    } catch (err) {
+      console.error('[AlertEngine] Error loading last processed ID:', err.message);
+    }
+  }
+
+  async checkForNewAttacks() {
+    if (this.isRunning) return;
+    this.isRunning = true;
+
+    try {
+      // FIX: Removed 'country' column - it doesn't exist in attack_logs table
+      const result = await pool.query(`
+        SELECT 
+          id, 
+          source_ip, 
+          attack_type, 
+          severity,
+          severity_label,
+          payload, 
+          timestamp,
+          method,
+          path,
+          tool_detected,
+          response_code
+        FROM attack_logs 
+        WHERE id > $1 
+        ORDER BY id ASC 
+        LIMIT 50
+      `, [this.lastProcessedId]);
+
+      if (result.rows.length > 0) {
+        console.log(`[AlertEngine] Found ${result.rows.length} new attacks`);
+        
+        for (const attack of result.rows) {
+          await this.processAttack(attack);
+          this.lastProcessedId = attack.id;
+        }
+      }
+    } catch (err) {
+      console.error('[AlertEngine] Poll error:', err.message);
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  async processAttack(attack) {
+    try {
+      // Log to console with colors
+      const severityColor = this.getSeverityColor(attack.severity);
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🚨 [ALERT] ${attack.attack_type?.toUpperCase() || 'UNKNOWN'} ATTACK DETECTED`);
+      console.log(`${'='.repeat(60)}`);
+      console.log(`📍 Source IP:    ${attack.source_ip}`);
+      console.log(`⚠️  Severity:     ${attack.severity_label || this.getSeverityLabel(attack.severity)} (${attack.severity}/10)`);
+      console.log(`🔧 Tool:         ${attack.tool_detected || 'Unknown'}`);
+      console.log(`📝 Payload:      ${attack.payload?.substring(0, 200)}${attack.payload?.length > 200 ? '...' : ''}`);
+      console.log(`📅 Time:         ${new Date(attack.timestamp).toLocaleString()}`);
+      console.log(`${'='.repeat(60)}\n`);
+
+      // Send to connected Socket.io clients (SOC Dashboard)
+      const io = require('../server').io;
+      if (io) {
+        io.emit('new_attack', { events: [attack] });
+      }
+
+      // Check for critical severity attacks
+      if (attack.severity >= 7) { // HIGH or CRITICAL
+        await this.sendHighPriorityAlert(attack);
+      }
+
+      // Check for specific attack patterns
+      await this.checkAttackPatterns(attack);
+
+    } catch (err) {
+      console.error('[AlertEngine] Error processing attack:', err.message);
+    }
+  }
+
+  async sendHighPriorityAlert(attack) {
+    // Send to webhook if configured
+    const webhookUrl = process.env.ALERT_WEBHOOK_URL;
+    if (webhookUrl) {
+      try {
+        const axios = require('axios');
+        await axios.post(webhookUrl, {
+          title: `🚨 ${attack.attack_type?.toUpperCase()} Attack`,
+          severity: attack.severity_label || this.getSeverityLabel(attack.severity),
+          ip: attack.source_ip,
+          payload: attack.payload,
+          timestamp: attack.timestamp,
+          tool: attack.tool_detected
+        });
+        console.log(`[AlertEngine] Webhook alert sent for ${attack.source_ip}`);
+      } catch (err) {
+        console.error('[AlertEngine] Webhook error:', err.message);
+      }
+    }
+
+    // Log to file (optional)
+    if (process.env.LOG_ALERTS_TO_FILE === 'true') {
+      const fs = require('fs');
+      const logEntry = {
+        timestamp: new Date().toISOString(),
+        type: attack.attack_type,
+        severity: attack.severity,
+        ip: attack.source_ip,
+        payload: attack.payload
+      };
+      fs.appendFileSync('alerts.log', JSON.stringify(logEntry) + '\n');
+    }
+  }
+
+  async checkAttackPatterns(attack) {
+    // Check for bruteforce patterns
+    if (attack.attack_type === 'bruteforce') {
+      const count = await this.getRecentAttacksCount(attack.source_ip, 'bruteforce', 300000); // last 5 minutes
+      if (count >= 5) {
+        console.log(`[AlertEngine] 🔒 Possible bruteforce attack from ${attack.source_ip} (${count} attempts)`);
+        
+        // Update attacker profile
+        await pool.query(`
+          UPDATE attacker_profiles 
+          SET bruteforce_count = bruteforce_count + 1,
+              threat_score = LEAST(threat_score + 10, 100)
+          WHERE ip = $1
+        `, [attack.source_ip]);
+      }
+    }
+
+    // Check for SQL injection patterns
+    if (attack.attack_type === 'sqli') {
+      console.log(`[AlertEngine] 🗄️ SQL Injection detected from ${attack.source_ip}`);
+      
+      // Update threat score
+      await pool.query(`
+        UPDATE attacker_profiles 
+        SET sqli_count = sqli_count + 1,
+            threat_score = LEAST(threat_score + 20, 100)
+        WHERE ip = $1
+      `, [attack.source_ip]);
+    }
+
+    // Check for XSS patterns
+    if (attack.attack_type === 'xss') {
+      console.log(`[AlertEngine] 💉 XSS attack detected from ${attack.source_ip}`);
+      
+      await pool.query(`
+        UPDATE attacker_profiles 
+        SET xss_count = xss_count + 1,
+            threat_score = LEAST(threat_score + 15, 100)
+        WHERE ip = $1
+      `, [attack.source_ip]);
+    }
+
+    // Check for path traversal
+    if (attack.attack_type === 'traversal') {
+      console.log(`[AlertEngine] 📂 Path traversal detected from ${attack.source_ip}`);
+      
+      await pool.query(`
+        UPDATE attacker_profiles 
+        SET traversal_count = traversal_count + 1,
+            threat_score = LEAST(threat_score + 20, 100)
+        WHERE ip = $1
+      `, [attack.source_ip]);
+    }
+  }
+
+  async getRecentAttacksCount(ip, attackType, timeWindowMs) {
+    try {
+      const result = await pool.query(`
+        SELECT COUNT(*) as count
+        FROM attack_logs
+        WHERE source_ip = $1 
+          AND attack_type = $2
+          AND timestamp > NOW() - ($3 || ' milliseconds')::INTERVAL
+      `, [ip, attackType, timeWindowMs]);
+      return parseInt(result.rows[0]?.count) || 0;
+    } catch (err) {
+      return 0;
+    }
+  }
+
+  getSeverityLabel(severity) {
+    if (severity >= 9) return 'CRITICAL';
+    if (severity >= 7) return 'HIGH';
+    if (severity >= 4) return 'MEDIUM';
+    return 'LOW';
+  }
+
+  getSeverityColor(severity) {
+    if (severity >= 9) return '\x1b[31m'; // Red
+    if (severity >= 7) return '\x1b[33m'; // Yellow
+    if (severity >= 4) return '\x1b[36m'; // Cyan
+    return '\x1b[32m'; // Green
+  }
+
+  stopPolling() {
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+      this.pollingInterval = null;
+      console.log('[AlertEngine] Polling stopped');
+    }
+  }
+
+  // Manual trigger for new attack (called from logAttack)
+  async triggerManualAlert(attack) {
+    await this.processAttack(attack);
+  }
+}
+
+// Singleton instance
+const alertEngine = new AlertEngine();
+
+module.exports = alertEngine;

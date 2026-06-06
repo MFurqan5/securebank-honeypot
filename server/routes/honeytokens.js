@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const pool = require('../db/pool');
+const pool = require('../db/connection'); // FIXED: Changed from '../db/pool' to '../db/connection'
 const crypto = require('crypto');
-const alertEngine = require('../services/alertEngine');
+// const alertEngine = require('../services/alertEngine'); // Uncomment if you have this
 
 function randomString(len) {
   return crypto.randomBytes(len).toString('base64').slice(0, len);
@@ -11,6 +11,14 @@ function randomString(len) {
 function randomHex(len) {
   return crypto.randomBytes(len).toString('hex').slice(0, len);
 }
+
+// Severity mapping for alerts
+const severityMap = {
+  LOW: 3,
+  MEDIUM: 5,
+  HIGH: 7,
+  CRITICAL: 9
+};
 
 // Generate fake honeytoken data by type
 function generateFakeData(type) {
@@ -21,25 +29,30 @@ function generateFakeData(type) {
         username: `svc_backup_${rand()}`,
         password: randomString(12),
         email: 'backup@securebank.internal',
+        note: '⚠️ DECOY CREDENTIAL - DO NOT USE ⚠️'
       };
     case 'apikey':
       return {
         key: `sk_live_${randomHex(32)}`,
         service: 'SecureBank Payment API v2',
+        environment: 'production',
+        note: '⚠️ DECOY API KEY - MONITORED BY SOC ⚠️'
       };
     case 'file':
       return {
         filename: 'customer_export_2024.csv',
         path: '/internal/exports/sensitive/',
+        size: '2.4 MB',
+        note: '⚠️ DECOY FILE - ACCESS LOGGED ⚠️'
       };
     default:
-      return { key: randomHex(16) };
+      return { key: randomHex(16), type: 'generic_decoy' };
   }
 }
 
 // ─── POST /api/honeytokens/create ────────────────────────────────────────────
 router.post('/create', async (req, res) => {
-  const { type = 'credential', attackerIp, ttlSeconds = 86400 } = req.body; // default 24h
+  const { type = 'credential', attackerIp, ttlSeconds = 86400 } = req.body;
   const tokenId = crypto.randomUUID();
   const fakeData = generateFakeData(type);
   
@@ -47,16 +60,16 @@ router.post('/create', async (req, res) => {
   const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
 
   try {
-    // Insert with proper expiry tracking
+    // FIXED: Removed 'issued_at' column (not in your schema)
     await pool.query(
       `INSERT INTO honeytokens 
-        (id, type, value, attacker_ip, created_at, issued_at, expires_at, status, ttl_seconds)
-       VALUES ($1, $2, $3, $4, NOW(), NOW(), $5, 'active', $6)`,
+        (id, type, value, attacker_ip, created_at, expires_at, status, ttl_seconds)
+       VALUES ($1, $2, $3, $4, NOW(), $5, 'active', $6)`,
       [
         tokenId,
         type,
         JSON.stringify(fakeData),
-        attackerIp || 'unknown',
+        attackerIp || null,  // Changed from 'unknown' to NULL to match schema
         expiresAt,
         ttlSeconds
       ]
@@ -70,10 +83,12 @@ router.post('/create', async (req, res) => {
         ...fakeData, 
         status: 'active',
         expiresAt: expiresAt.toISOString(),
-        ttlSeconds
+        ttlSeconds,
+        created_at: now.toISOString()
       } 
     });
   } catch (err) {
+    console.error('Error creating honeytoken:', err.message);
     // Still return success for honeypot convincingness
     res.json({ 
       success: true, 
@@ -83,7 +98,9 @@ router.post('/create', async (req, res) => {
         ...fakeData, 
         status: 'active',
         expiresAt: expiresAt.toISOString(),
-        ttlSeconds
+        ttlSeconds,
+        created_at: now.toISOString(),
+        _warning: 'Token created but database error occurred'
       } 
     });
   }
@@ -93,94 +110,118 @@ router.post('/create', async (req, res) => {
 router.post('/:id/trigger', async (req, res) => {
   const { id } = req.params;
   const { attackerIp } = req.body;
-  const triggeredAt = new Date().toISOString();
-  const ip = (req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim();
+  const triggeredAt = new Date();
+  
+  // Clean IP address
+  let ip = (req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim();
+  ip = ip.replace(/^::ffff:/, '');
+  if (ip === '::1') ip = '127.0.0.1';
 
   try {
-    // Check if token exists and if it's expired
+    // Check if token exists and get its status
     const checkResult = await pool.query(
-      `SELECT status, expires_at, created_at FROM honeytokens WHERE id = $1`,
+      `SELECT id, status, expires_at, created_at, type, value FROM honeytokens WHERE id = $1`,
       [id]
-    ).catch(() => ({ rows: [] }));
+    );
 
-    const token = checkResult.rows?.[0];
     let isExpired = false;
     let severity = 'CRITICAL';
     let alertType = 'HONEYTOKEN_TRIGGERED';
+    let tokenExists = checkResult.rows.length > 0;
+    let token = tokenExists ? checkResult.rows[0] : null;
 
-    if (token) {
+    if (tokenExists) {
       const now = new Date();
       isExpired = new Date(token.expires_at) < now;
       
       if (isExpired) {
         alertType = 'EXPIRED_HONEYTOKEN_TRIGGERED';
-        severity = 'HIGH'; // still critical but distinct from active honeytoken use
+        severity = 'HIGH';
         
-        // Update token status to expired
+        // Update token status to expired and record expired_use_at
         await pool.query(
           `UPDATE honeytokens 
-           SET status = 'expired', expired_use_at = NOW()
+           SET status = 'expired', 
+               expired_use_at = NOW(),
+               triggered_at = NOW()
            WHERE id = $1`,
           [id]
-        ).catch(() => {});
-      } else {
-        // Token is still active — update to triggered
+        );
+      } else if (token.status === 'active') {
+        // Token is still active and not yet triggered
         await pool.query(
           `UPDATE honeytokens 
-           SET status = 'triggered', triggered_at = NOW()
+           SET status = 'triggered', 
+               triggered_at = NOW()
            WHERE id = $1`,
           [id]
-        ).catch(() => {});
+        );
+      } else if (token.status === 'triggered') {
+        // Already triggered before
+        alertType = 'HONEYTOKEN_REUSE';
+        severity = 'CRITICAL';
       }
     }
 
-    // Fire alert with severity based on expiry status
-    alertEngine.sendCritical({
-      ip: attackerIp || ip,
-      country: 'Unknown',
-      attack_type: alertType,
-      payload: `Honeytoken ${id} ${isExpired ? '(EXPIRED)' : ''} triggered`,
-      timestamp: triggeredAt,
-      honeytokenId: id,
-      isExpired,
-    }).catch(() => {});
-
     // Log the honeytoken alert event
+    const alertIp = attackerIp || ip;
     await pool.query(
       `INSERT INTO honeytoken_alerts (honeytoken_id, attacker_ip, triggered_at, severity, details)
        VALUES ($1, $2, NOW(), $3, $4)`,
       [
         id,
-        attackerIp || ip,
-        isExpired ? 'HIGH' : 'CRITICAL',
+        alertIp,
+        severity === 'CRITICAL' ? severityMap.CRITICAL : severityMap.HIGH,
         JSON.stringify({
           isExpired,
           wasExpiredMs: isExpired && token ? (new Date() - new Date(token.expires_at)) : 0,
           tokenId: id,
-          alertType
+          alertType,
+          tokenType: token?.type || 'unknown',
+          tokenValue: token?.value || null
         })
       ]
-    ).catch(() => {});
+    );
+
+    // Fire alert if you have alertEngine
+    if (typeof alertEngine !== 'undefined' && alertEngine.sendCritical) {
+      alertEngine.sendCritical({
+        ip: alertIp,
+        country: 'Unknown',
+        attack_type: alertType,
+        payload: `Honeytoken ${id} ${isExpired ? '(EXPIRED)' : ''} ${token?.status === 'triggered' ? '(REUSED)' : ''} triggered`,
+        timestamp: triggeredAt.toISOString(),
+        honeytokenId: id,
+        isExpired,
+      }).catch(() => {});
+    }
 
     res.json({
       success: true,
       alert: {
-        severity: isExpired ? 'HIGH' : 'CRITICAL',
+        severity: severity,
+        severity_level: severity === 'CRITICAL' ? 9 : 7,
         honeytokenId: id,
-        attackerIp: attackerIp || ip,
-        triggeredAt,
+        attackerIp: alertIp,
+        triggeredAt: triggeredAt.toISOString(),
         isExpired,
-        status: isExpired ? 'expired_reused' : 'active_triggered',
+        status: isExpired ? 'expired_reused' : (token?.status === 'triggered' ? 'active_triggered' : 'triggered'),
+        alertType: alertType
       },
     });
   } catch (err) {
+    console.error('Error triggering honeytoken:', err.message);
     res.json({
       success: true,
       alert: {
         severity: 'CRITICAL',
+        severity_level: 9,
         honeytokenId: id,
         attackerIp: attackerIp || ip,
-        triggeredAt,
+        triggeredAt: triggeredAt.toISOString(),
+        isExpired: false,
+        status: 'triggered',
+        alertType: 'HONEYTOKEN_TRIGGERED'
       },
     });
   }
@@ -191,15 +232,25 @@ router.get('/', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT 
-        id, type, attacker_ip, created_at, issued_at, expires_at, status, ttl_seconds,
+        id, 
+        type, 
+        attacker_ip, 
+        created_at, 
+        expires_at, 
+        status, 
+        ttl_seconds,
+        triggered_at,
+        expired_use_at,
         (NOW() > expires_at) as is_expired,
         EXTRACT(EPOCH FROM (expires_at - NOW())) as seconds_remaining
        FROM honeytokens
-       ORDER BY created_at DESC LIMIT 100`
+       ORDER BY created_at DESC 
+       LIMIT 100`
     );
-    res.json({ success: true, data: result.rows });
-  } catch {
-    res.json({ success: true, data: [] });
+    res.json({ success: true, honeytokens: result.rows }); // FIXED: Changed 'data' to 'honeytokens' to match frontend
+  } catch (err) {
+    console.error('Error fetching honeytokens:', err.message);
+    res.json({ success: true, honeytokens: [] });
   }
 });
 
@@ -208,15 +259,23 @@ router.get('/triggered', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT 
-        id, type, attacker_ip, created_at, triggered_at, expires_at, status,
+        id, 
+        type, 
+        attacker_ip, 
+        created_at, 
+        triggered_at, 
+        expires_at, 
+        status,
         (NOW() > expires_at) as is_expired,
         EXTRACT(EPOCH FROM (triggered_at - expires_at)) as triggered_after_expiry_seconds
        FROM honeytokens
        WHERE status IN ('triggered', 'expired')
-       ORDER BY triggered_at DESC LIMIT 100`
+       ORDER BY triggered_at DESC 
+       LIMIT 100`
     );
     res.json({ success: true, data: result.rows });
-  } catch {
+  } catch (err) {
+    console.error('Error fetching triggered honeytokens:', err.message);
     res.json({ success: true, data: [] });
   }
 });
@@ -226,14 +285,22 @@ router.get('/active', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT 
-        id, type, attacker_ip, created_at, expires_at, status, ttl_seconds,
+        id, 
+        type, 
+        attacker_ip, 
+        created_at, 
+        expires_at, 
+        status, 
+        ttl_seconds,
         EXTRACT(EPOCH FROM (expires_at - NOW())) as seconds_remaining
        FROM honeytokens
        WHERE status = 'active' AND expires_at > NOW()
-       ORDER BY expires_at ASC LIMIT 50`
+       ORDER BY expires_at ASC 
+       LIMIT 50`
     );
     res.json({ success: true, data: result.rows });
-  } catch {
+  } catch (err) {
+    console.error('Error fetching active honeytokens:', err.message);
     res.json({ success: true, data: [] });
   }
 });
@@ -244,8 +311,16 @@ router.get('/:id', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT 
-        id, type, value, attacker_ip, created_at, issued_at, expires_at, 
-        triggered_at, expired_use_at, status, ttl_seconds,
+        id, 
+        type, 
+        value, 
+        attacker_ip, 
+        created_at, 
+        expires_at, 
+        triggered_at, 
+        expired_use_at, 
+        status, 
+        ttl_seconds,
         (NOW() > expires_at) as is_expired,
         EXTRACT(EPOCH FROM (expires_at - NOW())) as seconds_remaining
        FROM honeytokens 
@@ -253,11 +328,12 @@ router.get('/:id', async (req, res) => {
       [id]
     );
     if (result.rows.length === 0) {
-      return res.json({ success: false, error: 'Honeytoken not found' });
+      return res.status(404).json({ success: false, error: 'Honeytoken not found' });
     }
     res.json({ success: true, data: result.rows[0] });
-  } catch {
-    res.json({ success: false, error: 'Not found' });
+  } catch (err) {
+    console.error('Error fetching honeytoken:', err.message);
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -265,15 +341,22 @@ router.get('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    await pool.query(
+    const result = await pool.query(
       `UPDATE honeytokens
        SET status = 'inactive'
-       WHERE id = $1`,
+       WHERE id = $1
+       RETURNING id`,
       [id]
     );
-    res.json({ success: true });
-  } catch {
-    res.json({ success: true });
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Honeytoken not found' });
+    }
+    
+    res.json({ success: true, message: 'Honeytoken revoked' });
+  } catch (err) {
+    console.error('Error revoking honeytoken:', err.message);
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -291,8 +374,9 @@ router.get('/stats/summary', async (req, res) => {
        FROM honeytokens`
     );
     res.json({ success: true, data: result.rows[0] });
-  } catch {
-    res.json({ success: true, data: { error: 'Could not fetch stats' } });
+  } catch (err) {
+    console.error('Error fetching stats:', err.message);
+    res.json({ success: true, data: { total_tokens: 0, active_tokens: 0, triggered_count: 0, expired_count: 0, inactive_count: 0, reused_after_expiry: 0 } });
   }
 });
 
