@@ -161,3 +161,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`   • Weak Sessions:     GET /api/session`);
   console.log('='.repeat(60) + '\n');
 });
+
+module.exports = { app, server, io };

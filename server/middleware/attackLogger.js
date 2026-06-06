@@ -208,32 +208,35 @@ function getNextSeq(sessionId) {
 
 // ─── Middleware ──────────────────────────────────────────────────────────────
 function attackLogger(req, res, next) {
+  // Capture values before routing alters req.path
+  const sourceIp = (req.headers["x-forwarded-for"] || req.ip || "")
+    .split(",")[0]
+    .trim();
+  const sourcePort = req.socket?.remotePort || 0;
+  const method = req.method;
+  const path = req.originalUrl || req.path;
+  const userAgent = req.headers["user-agent"] || "";
+  const query = req.query;
+  const body = req.body;
+  const cookies = req.cookies;
+
   // Always call next immediately — never block
   next();
 
   // Async logging — fire and forget
   setImmediate(async () => {
     try {
-      const sourceIp = (req.headers["x-forwarded-for"] || req.ip || "")
-        .split(",")[0]
-        .trim();
-      const sourcePort = req.socket?.remotePort || 0;
-      const method = req.method;
-      const path = req.path;
-      const userAgent = req.headers["user-agent"] || "";
-
-      // Session ID: read from cookie, or generate + set
-      let sessionId = req.cookies?.sid;
+      // Session ID: read from cookie, or generate
+      let sessionId = cookies?.sid;
       if (!sessionId) {
         sessionId = require("crypto").randomUUID();
-        // Can't set cookie here since headers are already sent, so just use it
       }
 
-      const attemptedUsername = req.body?.username || null;
-      const attemptedAccount = req.body?.account || req.query?.account || null;
+      const attemptedUsername = body?.username || null;
+      const attemptedAccount = body?.account || query?.account || null;
 
       // Build payload string
-      const payload = JSON.stringify({ query: req.query, body: req.body });
+      const payload = JSON.stringify({ query, body });
 
       // Check for expired token reuse
       const expiredTokenInfo = await checkExpiredTokenUsage(
@@ -263,28 +266,36 @@ function attackLogger(req, res, next) {
         classification = classifyAttack(payload, path, method);
       }
 
-      const { attack_type, sub_attack_type, severity } = classification;
+      // Merge explicit route-level logging if present to avoid duplication
+      const isExplicit = !!req.explicitAttack;
+      const attack_type = isExplicit ? req.explicitAttack.attackType : classification.attack_type;
+      const sub_attack_type = isExplicit ? (req.explicitAttack.subAttackType || classification.sub_attack_type) : classification.sub_attack_type;
+      const severity = isExplicit ? req.explicitAttack.severity : classification.severity;
+      const finalPayload = isExplicit ? (req.explicitAttack.payload || payload) : payload;
+      const responseCode = isExplicit ? (req.explicitAttack.responseCode || res.statusCode || 200) : (res.statusCode || 200);
 
       // 1. Insert into attack_logs
       await pool
         .query(
           `INSERT INTO attack_logs
-           (source_ip, source_port, method, path, payload, attack_type, severity,
-            user_agent, tool_detected, os_fingerprint, session_id, response_code, timestamp)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())`,
+           (source_ip, source_port, method, path, payload, attack_type, sub_attack_type, severity,
+            user_agent, session_id, targeted_endpoint, attempted_username, attempted_account, response_code, timestamp)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())`,
           [
             sourceIp,
             sourcePort,
             method,
             path,
-            payload,
+            finalPayload,
             attack_type,
+            sub_attack_type,
             severity,
             userAgent,
-            null,
-            null, // tool and os filled async below
             sessionId,
-            res.statusCode || 200,
+            path, // targeted_endpoint
+            attemptedUsername,
+            attemptedAccount,
+            responseCode,
           ],
         )
         .catch((err) =>
@@ -334,7 +345,7 @@ function attackLogger(req, res, next) {
         .query(
           `INSERT INTO session_recordings (session_id, attacker_ip, request_method, request_path, response_code, timestamp, sequence_number)
          VALUES ($1, $2, $3, $4, $5, NOW(), $6)`,
-          [sessionId, sourceIp, method, path, res.statusCode || 200, seqNum],
+          [sessionId, sourceIp, method, path, responseCode, seqNum],
         )
         .catch((err) =>
           console.error("[Logger] session_recordings insert:", err.message),
@@ -372,3 +383,4 @@ function attackLogger(req, res, next) {
 }
 
 module.exports = attackLogger;
+

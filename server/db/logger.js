@@ -115,25 +115,22 @@ function parseUserAgent(ua = "") {
 }
 
 // Log attack event in PostgreSQL database
-async function logAttack(req, { attackType, severity, payload, responseCode }) {
+async function logAttack(req, { attackType, severity, payload, responseCode, subAttackType }) {
+  if (req) {
+    req.explicitAttack = { attackType, severity, payload, responseCode, subAttackType };
+    console.log(`[LOGGER] Explicit attack registered on request object: ${attackType}, severity: ${severity}`);
+    return true;
+  }
+
   try {
-    console.log(`[LOGGER] Starting to log attack: ${attackType}, severity: ${severity}`);
+    console.log(`[LOGGER FALLBACK] Starting to log attack: ${attackType}, severity: ${severity}`);
     
-    let rawIp = req.ip || req.socket.remoteAddress || "127.0.0.1";
-    
-    // Clean IP address
-    let cleanIp = rawIp.replace(/^::ffff:/, '');
-    if (cleanIp === '::1' || cleanIp === '::' || cleanIp === '0:0:0:0:0:0:0:1') {
-      cleanIp = '127.0.0.1';
-    }
-    
-    console.log(`[LOGGER] Cleaned IP: ${cleanIp}`);
-    
-    const port = req.socket.remotePort || 0;
-    const method = req.method;
-    const path = req.originalUrl || req.path;
-    const ua = req.headers["user-agent"] || "";
-    const sessionId = req.headers["x-session-id"] || "session_none";
+    let cleanIp = "127.0.0.1";
+    const port = 0;
+    const method = "GENERIC";
+    const path = "/";
+    const ua = "";
+    const sessionId = "session_fallback";
 
     const { tool, os } = parseUserAgent(ua);
     const severityInt = severityToInteger(severity);
@@ -142,19 +139,19 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
     const insertLogQuery = `
       INSERT INTO attack_logs (
         source_ip, source_port, method, path, payload, 
-        attack_type, severity, user_agent, tool_detected, 
+        attack_type, sub_attack_type, severity, user_agent, tool_detected, 
         os_fingerprint, session_id, response_code, timestamp
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
       RETURNING id
     `;
     
     const logResult = await pool.query(insertLogQuery, [
       cleanIp, port, method, path, payload || null,
-      attackType, severityInt, ua, tool, os, sessionId, responseCode || 200,
+      attackType, subAttackType || null, severityInt, ua, tool, os, sessionId, responseCode || 200,
     ]);
     
-    console.log(`[LOGGER] Attack log inserted with ID: ${logResult.rows[0].id}`);
+    console.log(`[LOGGER FALLBACK] Attack log inserted with ID: ${logResult.rows[0].id}`);
 
     // Update attacker profile
     const profileRes = await pool.query(`SELECT * FROM attacker_profiles WHERE ip = $1`, [cleanIp]);
@@ -163,24 +160,6 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
     let country = "Unknown", city = "Unknown", isp = "Unknown";
     let latitude = null, longitude = null;
     
-    const isPrivateIP = (
-      cleanIp === "127.0.0.1" ||
-      cleanIp.startsWith("192.168") ||
-      cleanIp.startsWith("10.") ||
-      cleanIp.startsWith("172.")
-    );
-    
-    if (isPrivateIP) {
-      const hash = cleanIp.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
-      const idx = Math.abs(hash) % mockGeoIPLocations.length;
-      const loc = mockGeoIPLocations[idx];
-      country = loc.country;
-      city = loc.city;
-      isp = loc.isp;
-      latitude = loc.lat;
-      longitude = loc.lon;
-    }
-
     // Calculate threat points
     let points = 0;
     if (attackType === "sqli") points += 20;
@@ -205,7 +184,6 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
           attackType === "xss" ? 1 : 0,
           attackType === "bruteforce" ? 1 : 0,
           attackType === "traversal" ? 1 : 0]);
-      console.log(`[LOGGER] New profile created for ${cleanIp}`);
     } else {
       const profile = profileRes.rows[0];
       const newTotal = profile.total_requests + 1;
@@ -225,12 +203,11 @@ async function logAttack(req, { attackType, severity, payload, responseCode }) {
             sqli_count = $7, xss_count = $8, bruteforce_count = $9, traversal_count = $10
         WHERE ip = $1
       `, [cleanIp, newTotal, finalScore, os, tool, finalScore > 75, sqli, xss, brute, traversal]);
-      console.log(`[LOGGER] Profile updated for ${cleanIp}`);
     }
 
     return logResult.rows[0].id;
   } catch (error) {
-    console.error("[LOGGER ERROR]", error);
+    console.error("[LOGGER FALLBACK ERROR]", error);
     return null;
   }
 }
