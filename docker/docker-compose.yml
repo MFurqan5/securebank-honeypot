@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # 1. Honeypot Backend Server
+  honeypot-server:
+    build:
+      context: ../server
+      dockerfile: Dockerfile
+    container_name: sb-honeypot-backend
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=postgresql://neondb_owner:npg_cOm9C8ezuMjV@ep-gentle-bread-apvc4or4-pooler.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      - HONEYPOT_PORT=5000
+      - PORT=5000
+      - NODE_ENV=development
+
+  # 2. SOC Dashboard Backend Server
+  soc-server:
+    build:
+      context: ../../soc-monitoring-dashboard/server
+      dockerfile: Dockerfile
+    container_name: sb-soc-backend
+    restart: always
+    ports:
+      - "4000:4000"
+    environment:
+      - DATABASE_URL=postgresql://neondb_owner:npg_cOm9C8ezuMjV@ep-gentle-bread-apvc4or4-pooler.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      - SOC_PORT=4000
+      - PORT=4000
+      - NODE_ENV=development
+
+  # 3. NGINX Gateway / Reverse Proxy & Static Web Server
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: sb-reverse-proxy
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../soc-monitoring-dashboard/client/build:/usr/share/nginx/html:ro
+    depends_on:
+      - honeypot-server
+      - soc-server
