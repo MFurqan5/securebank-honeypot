@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -80,51 +80,6 @@ function Search() {
           <h2>🔍 Transaction Search</h2>
           <p>Search your transaction history</p>
         </div>
-        <div className="vuln-badge high">⚠️ REFLECTED XSS & SQLi VULNERABLE</div>
-      </div>
-
-      <div className="warning-box critical">
-        <strong>⚠️ SECURITY WARNING</strong>
-        <p>This search function is vulnerable to Reflected XSS and SQL Injection attacks. Any JavaScript or SQL you enter will execute!</p>
-      </div>
-
-      {/* XSS Test Section */}
-      <div className="xss-test-section">
-        <h3>🎯 XSS Test Payloads (Click to test)</h3>
-        <p className="test-note">⚠️ These payloads will execute in your browser!</p>
-        <div className="payload-grid">
-          {xssPayloads.map((payload, i) => (
-            <button 
-              key={i}
-              className={`payload-btn xss-btn ${payload.severity}`}
-              onClick={() => {
-                setQuery(payload.payload);
-                setXssDetected(false);
-              }}
-            >
-              {payload.name}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* SQL Injection Test Section */}
-      <div className="sql-test-section">
-        <h3>🗄️ SQL Injection Test Payloads</h3>
-        <div className="payload-grid">
-          {sqlPayloads.map((payload, i) => (
-            <button 
-              key={i}
-              className={`payload-btn sqli-btn ${payload.severity}`}
-              onClick={() => {
-                setQuery(payload.payload);
-                setXssDetected(false);
-              }}
-            >
-              {payload.name}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Search Form */}
@@ -194,25 +149,9 @@ function Search() {
       {results.length === 0 && !isLoading && query && (
         <div className="no-results">
           <p>No results found matching your search.</p>
-          <p className="hint">💡 Try searching for "admin", "john", or use XSS/SQLi payloads above</p>
+          <p className="hint">💡 Try searching for "admin", "john"</p>
         </div>
       )}
-
-      {/* Info Boxes */}
-      <div className="info-box">
-        <h4>💡 How Reflected XSS Works:</h4>
-        <p>1. Attacker crafts malicious link: <code>/search?q=&lt;script&gt;alert('XSS')&lt;/script&gt;</code></p>
-        <p>2. Victim clicks the link</p>
-        <p>3. Server reflects the script back without sanitization</p>
-        <p>4. Script executes in victim's browser</p>
-      </div>
-
-      <div className="info-box warning">
-        <h4>💡 How SQL Injection Works in Search:</h4>
-        <p>1. Attacker enters: <code>' OR '1'='1</code> in search field</p>
-        <p>2. Query becomes vulnerable to revealing all user data</p>
-        <p>3. Attacker can see other users' sensitive information</p>
-      </div>
     </div>
   );
 }

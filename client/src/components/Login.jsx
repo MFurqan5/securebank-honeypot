@@ -87,11 +87,6 @@ function Login() {
           </div>
           <p className="tagline">Enterprise Banking Platform</p>
         </div>
-        
-        <div className="vuln-badge critical">
-          ⚠️ SECURITY WARNING: This system is vulnerable to SQL Injection
-        </div>
-        
         <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label>Username</label>
@@ -127,54 +122,6 @@ function Login() {
             {message.text}
           </div>
         )}
-        
-        {/* SQL Injection Test Section */}
-        <div className="sql-test-section">
-          <h4>🐍 SQL Injection Test Payloads</h4>
-          <p className="test-hint">Click to test SQL injection vulnerabilities</p>
-          <div className="example-buttons">
-            {sqlInjectionExamples.map((ex, i) => (
-              <button 
-                key={i}
-                className="example-btn sql-btn"
-                onClick={() => setUsername(ex.value)}
-              >
-                {ex.name}
-              </button>
-            ))}
-          </div>
-        </div>
-        
-        {/* Test Accounts */}
-        <div className="test-accounts">
-          <h4>📋 Test Accounts</h4>
-          <div className="accounts-grid">
-            {testAccounts.map((acc, i) => (
-              <div 
-                key={i}
-                className="account"
-                onClick={() => fillCredentials(acc)}
-              >
-                <div className="account-name">
-                  <strong>{acc.full_name}</strong>
-                  <span className="account-role">{acc.role}</span>
-                </div>
-                <div className="account-credentials">
-                  {acc.username} / {acc.password}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Info Box */}
-        <div className="info-box">
-          <h4>💡 How SQL Injection Works:</h4>
-          <p>1. Attacker enters: <code>admin' OR '1'='1'--</code> in username field</p>
-          <p>2. Query becomes: <code>SELECT * FROM users WHERE username='admin' OR '1'='1'--' AND password='...'</code></p>
-          <p>3. The <code>--</code> comments out the password check</p>
-          <p>4. Attacker bypasses authentication!</p>
-        </div>
       </div>
     </div>
   );

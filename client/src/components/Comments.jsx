@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
 function Comments() {
@@ -82,12 +82,6 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
           <h2>💬 Customer Feedback</h2>
           <p>Share your experience with SecureBank</p>
         </div>
-        <div className="vuln-badge critical">⚠️ STORED XSS VULNERABLE</div>
-      </div>
-
-      <div className="warning-box critical">
-        <strong>⚠️ CRITICAL SECURITY WARNING</strong>
-        <p>This comment system is vulnerable to Stored XSS. Malicious scripts are saved to the database and execute for every visitor!</p>
       </div>
 
       {error && (
@@ -95,22 +89,6 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
           <strong>Error:</strong> {error}
         </div>
       )}
-
-      <div className="xss-test-section">
-        <h3>🎯 Stored XSS Test Payloads</h3>
-        <p className="test-note">Click any payload to test XSS vulnerability</p>
-        <div className="payload-grid">
-          {xssPayloads.map((payload, i) => (
-            <button 
-              key={i}
-              className="payload-btn critical"
-              onClick={() => setContent(payload.payload)}
-            >
-              {payload.name}
-            </button>
-          ))}
-        </div>
-      </div>
 
       <div className="comment-form-container">
         <h3>📝 Leave a Comment</h3>
@@ -162,14 +140,6 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
         {comments.length === 0 && (
           <div className="no-comments">No comments yet. Be the first to post!</div>
         )}
-      </div>
-
-      <div className="info-box">
-        <h4>💡 How Stored XSS Works:</h4>
-        <p>1. Attacker posts malicious script in comment</p>
-        <p>2. Script is saved to the database</p>
-        <p>3. Every user who views the page executes the script</p>
-        <p>4. Can steal cookies, redirect users, or deface the site</p>
       </div>
     </div>
   );
