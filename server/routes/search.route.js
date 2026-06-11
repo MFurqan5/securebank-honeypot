@@ -42,25 +42,25 @@ router.get('/', async (req, res) => {
       payload: qStr,
       responseCode: 200
     });
-  }
-
-  // Detect SQL injection in search
-  const sqlPatterns = ["'", '"', "or 1=1", "union select", "--", "';"];
-  let isSqlInjection = false;
-  for (const pattern of sqlPatterns) {
-    if (qLower.includes(pattern)) {
-      isSqlInjection = true;
-      break;
+  } else {
+    // Detect SQL injection in search
+    const sqlPatterns = ["'", '"', "or 1=1", "union select", "--", "';"];
+    let isSqlInjection = false;
+    for (const pattern of sqlPatterns) {
+      if (qLower.includes(pattern)) {
+        isSqlInjection = true;
+        break;
+      }
     }
-  }
-  
-  if (isSqlInjection) {
-    await logAttack(req, {
-      attackType: 'sqli',
-      severity: severityMap.MEDIUM,
-      payload: qStr,
-      responseCode: 200
-    });
+    
+    if (isSqlInjection) {
+      await logAttack(req, {
+        attackType: 'sqli',
+        severity: severityMap.MEDIUM,
+        payload: qStr,
+        responseCode: 200
+      });
+    }
   }
 
   // VULNERABLE Query Construction - SQL Injection possible
